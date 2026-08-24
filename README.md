@@ -1,29 +1,234 @@
 # socialmonitor
 
-Configurable multi-source social monitoring: define monitors (platforms + accounts +
-keywords + taxonomy) → pipeline fetches and LLM-classifies matching content → deduped
-themes → dashboard, `/ask` chat, weekly AI summaries, Telegram alerts.
+Configurable multi-source social monitoring. You define **monitors** — which platforms,
+which accounts, which keywords, and your own taxonomy — and the pipeline fetches matching
+content, classifies it with an LLM into a universal signal schema, dedupes it into
+**themes**, and surfaces everything through a dashboard, an **/ask** chat analyst, weekly
+AI summaries, and Telegram alerts.
 
-- Spec / source of truth: [SPEC.md](./SPEC.md)
-- Progress: [PROGRESS.md](./PROGRESS.md)
-- Built template-first: everything runs with credential placeholders; plug keys into the
-  connections page (or `.env`) to activate a source. `FIXTURE_MODE=1` replays realistic
-  fixtures through the real pipeline for end-to-end verification without any account.
+Built **template-first**: the entire system runs with zero credentials. Every integration
+is optional; plugging a key in activates that piece on the pipeline's next tick — no
+deploy, no code change.
 
-## Layout
+- Spec / design decisions: [SPEC.md](./SPEC.md) · Progress: [PROGRESS.md](./PROGRESS.md)
+- Deeper runbooks: [docs/runbook/operator.md](./docs/runbook/operator.md) ·
+  [docs/runbook/engineer.md](./docs/runbook/engineer.md)
+
+## How it works
+
+```
+  X · Reddit · YouTube · Telegram · Discord        (any subset, per monitor)
+        │ fetch (cursored, budgeted)
+        ▼
+  raw_items ──► LLM classifier ──► themes (deduped, ranked by unique authors)
+  (Supabase)    (Haiku, Batch API,      │
+                 prefilter, budgets)    ├─► dashboard (volume, sentiment, themes, health)
+                                        ├─► /ask chat (digest + read-only tools)
+  pg_cron ► pgmq queue ► worker         ├─► weekly summary (Sonnet, Monday) ─► Telegram
+  (Supabase)            (Railway)       └─► alerts (breakers, budgets, canaries) ─► Telegram
+```
+
+| Piece | Runs on | Package |
+|---|---|---|
+| Web app (dashboard, /ask, config) | Vercel (or anywhere Next.js runs) | `apps/web` |
+| Pipeline worker | Railway (or any Docker host) | `packages/pipeline` |
+| Database, queue, cron, secrets vault, auth | Supabase | `packages/db` |
+
+## Requirements
+
+- Node ≥ 20 (developed on 22/23), pnpm 10 (`corepack enable`)
+- A Supabase project (free tier is fine) — the only account the *app itself* needs
+- Everything else (Anthropic, source APIs, Telegram bot) is optional until you want that
+  feature live
+
+## Quickstart (no accounts at all)
+
+```sh
+git clone https://github.com/benlvb/socialmonitor && cd socialmonitor
+pnpm install
+pnpm typecheck && pnpm test && pnpm build   # 41 tests, all packages
+cp .env.example .env                        # everything blank is a valid state
+pnpm --filter @socialmonitor/pipeline dev   # worker starts, reports "idle (unconfigured)"
+pnpm --filter web dev                       # http://localhost:3000 shows the setup notice
+```
+
+That proves the code runs. To see the real product you need step 1 below (Supabase);
+to see it **full of data without any social-media or LLM account**, add `FIXTURE_MODE=1`
+(step 3).
+
+## Activation — step by step
+
+Each step is independent. Stop at any point; everything done so far keeps working.
+
+### 1. Supabase (the backbone)
+
+1. Create a project at [supabase.com](https://supabase.com) → note the project ref
+2. Apply the migrations (schema, RLS, pgmq queue, pg_cron producer):
+   ```sh
+   cd packages/db
+   npx supabase login
+   npx supabase link --project-ref <ref>
+   npx supabase db push
+   ```
+3. Dashboard → Authentication → Sign In / Up: make sure **Email** provider is enabled
+4. Fill `.env` (Dashboard → Settings → API / Database):
+   ```
+   SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL        → Project URL
+   SUPABASE_ANON_KEY / NEXT_PUBLIC_SUPABASE_ANON_KEY → anon public key
+   SUPABASE_SERVICE_ROLE_KEY                      → service role key (server-only)
+   DATABASE_URL                                   → "Session pooler" connection string
+   ALLOWED_EMAILS                                 → your email (comma-separated list)
+   ```
+5. `pnpm --filter web dev` → sign **up** with an allowlisted email → you're in.
+
+### 2. Anthropic (classification, /ask, summaries)
+
+`ANTHROPIC_API_KEY` from [console.anthropic.com](https://console.anthropic.com).
+Defaults: Haiku 4.5 via the Batch API (50% price) for classification, Sonnet 5 for /ask
+and weekly summaries. Spend is tracked per monitor in `llm_usage`;
+`GLOBAL_MONTHLY_LLM_CAP_USD` (default **$50**) hard-pauses all LLM spend — classification,
+/ask, summaries — while **fetching always continues**, so no data is ever lost to a
+budget stop.
+
+### 3. See it working end-to-end (fixtures, still no source accounts)
+
+```sh
+FIXTURE_MODE=1 pnpm --filter @socialmonitor/pipeline dev
+```
+
+With Supabase configured and a monitor created (see below), fixture payloads for all five
+platforms flow through the **real** pipeline — fetch → classify → themes — and populate
+the dashboard and /ask. Without an Anthropic key a deterministic stub classifier is used;
+with one, real classification runs on the fixtures.
+
+### 4. Deploy
+
+**Web → Vercel**: import the repo, set **Root Directory = `apps/web`**, add the env vars
+from steps 1–2 plus `TELEGRAM_NOTIFY_*` when you have them.
+
+**Worker → Railway**: new service → Deploy from GitHub repo. The root `railway.toml`
+points the build at `packages/pipeline/Dockerfile`. Env vars: `DATABASE_URL`,
+`ANTHROPIC_API_KEY`, `WORKER_CONCURRENCY=2`, `GLOBAL_MONTHLY_LLM_CAP_USD=50`, plus
+source credentials as they arrive. The worker idles harmlessly when unconfigured.
+
+### 5. Source credentials (any order, any subset)
+
+Enter them on the **Connections** page (stored in Supabase Vault, "Test connection"
+button per integration) or as env vars — Vault wins when both exist.
+
+| Source | Get the credential | Env vars |
+|---|---|---|
+| **X / Twitter** | [twitterapi.io](https://twitterapi.io) → API key (pay-as-you-go scraper; the official X API can replace it later as an adapter swap) | `TWITTERAPI_IO_KEY` |
+| **Reddit** | [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) → create app, type **script** → client id + secret, plus that account's username/password | `REDDIT_CLIENT_ID` `REDDIT_CLIENT_SECRET` `REDDIT_USERNAME` `REDDIT_PASSWORD` |
+| **YouTube** | Google Cloud Console → enable **YouTube Data API v3** → API key. Free 10k units/day; keyword search costs 100/query and is budgeted per monitor | `YOUTUBE_API_KEY` |
+| **Telegram** | A **dedicated account on a spare number** (never your personal one). Get `api_id`/`api_hash` at [my.telegram.org](https://my.telegram.org), then run the session generator: `TELEGRAM_MTPROTO_API_ID=… TELEGRAM_MTPROTO_API_HASH=… pnpm --filter @socialmonitor/pipeline exec tsx ../../scripts/telegram-session.ts` | `TELEGRAM_MTPROTO_API_ID` `TELEGRAM_MTPROTO_API_HASH` `TELEGRAM_MTPROTO_SESSION` |
+| **Discord** | [discord.com/developers](https://discord.com/developers/applications) → bot → enable the **MESSAGE_CONTENT** privileged intent → invite to your server with channel-level view permissions | `DISCORD_BOT_TOKEN` |
+| **Alerts** | BotFather → `/newbot` (a fresh bot). Add it to a private channel/group, post once, read the chat id from `https://api.telegram.org/bot<token>/getUpdates` | `TELEGRAM_NOTIFY_BOT_TOKEN` `TELEGRAM_NOTIFY_CHAT_ID` |
+
+## Your first monitor
+
+**App → New monitor**, then on the settings page:
+
+**Targets** — what to watch, per platform:
+
+| Source | Target kinds |
+|---|---|
+| x | `keyword` (search phrase, X query syntax works), `account` (handle, no @) |
+| reddit | `subreddit`, `keyword`, `user` |
+| youtube | `channel` (@handle or UC… id), `keyword` |
+| telegram | `channel` (public username) |
+| discord | `guild` (server id — bot must be in it) |
+
+**Configuration JSON** — the classifier's brain. Every field is runtime-editable; the
+pipeline picks changes up on its next tick. The editor shows the fully-defaulted config;
+the fields that matter most:
+
+```jsonc
+{
+  // 1. WHAT THIS MONITOR IS ABOUT — goes into every classifier prompt. Be specific.
+  "context": "Monitoring public sentiment about Acme Widget, a dashboard SaaS. ...",
+
+  // 2. Signal types (edit freely — it's config, not a schema)
+  "signal_types": ["complaint","feature_request","question","praise",
+                   "announcement","news","opinion","noise"],
+
+  // 3. Your taxonomy. ONE tag is the normal answer; hints prevent misuse.
+  "tags": [
+    { "name": "Mobile UX", "hint": "the phone app experience specifically" },
+    { "name": "Pricing" },
+    { "name": "General", "hint": "LAST RESORT ONLY - never alongside another tag." }
+  ],
+
+  // 4. What counts as noise FOR THIS MONITOR (markdown, goes into the prompt)
+  "noise_rules": "- Posts about the unrelated Acme rocket division\n- Engagement-farming giveaways",
+
+  // 5. Worked examples — the single highest-leverage field. Start with ~5;
+  //    every inline correction you make later adds to these automatically.
+  "seed_examples": [
+    { "text": "widget app crashes on open", "relevant": true,
+      "signal_type": "complaint", "tags": ["Mobile UX"], "why": "specific bug report" },
+    { "text": "wen acme token 10x", "relevant": false, "why": "price talk, not product signal" }
+  ],
+
+  "budgets":  { "daily_classifications": 500, "youtube_searches_per_day": 20, "x_reads_per_day": 2000 },
+  "cadence_minutes": { "fetch": 30, "classify": 30, "metrics": 15 },
+  "toggles":  { "youtube_videos": true, "youtube_comments": true, "reddit_comments": true,
+                "transcripts": false, "ask_tool_approval": false },
+  "prefilter": { "min_chars": 8, "mute_patterns": ["giveaway"] },  // free filters before any LLM call
+  "model": {}   // per-monitor overrides, e.g. {"classify": "claude-sonnet-5"}
+}
+```
+
+Copy the JSON out to export a monitor; paste to import. Save → the cron producer picks it
+up within ~5 minutes → watch the dashboard's **Pipeline health** panel.
+
+## Day to day
+
+- **Dashboard** — volume by source, sentiment trend, top themes ranked by *unique
+  authors* (not raw item count), LLM budget burn, per-stream health. Reddit/Discord have
+  no view counts; reach is shown as a labeled engagement/followers proxy, never silently
+  mixed with real impressions.
+- **Items** — every classified item with the model's reasoning. **Fix classification** on
+  any wrong call: the correction rewrites the item, adjusts themes, *and becomes a
+  few-shot example that teaches the classifier* — this is how a new monitor gets accurate.
+- **/ask** — "what changed this week?", "top complaints about the mobile app", "show me
+  the items behind the login theme". Tool calls are shown inline; the optional
+  `ask_tool_approval` toggle makes each one require your approval first.
+- **Summaries** — every Monday per monitor: at-a-glance, week-over-week table, key themes
+  with links, recommendations. Stored, rendered in the app, pushed to Telegram.
+- **Alerts** (Telegram): breaker trips, budget cap hits, mass classification failures,
+  the Discord MESSAGE_CONTENT canary, summary failures.
+
+## Troubleshooting
+
+| Symptom | Meaning | Do |
+|---|---|---|
+| Source pill ⚪ awaiting credentials | No key found (Vault or env) | Add on Connections, hit **Test connection** |
+| Stream shows `breaker` | N consecutive systemic failures (bad key, deleted channel, kicked bot) | Fix the cause, then reset: `update sync_streams set breaker_tripped_at = null, consecutive_failures = 0 where stream = '…';` in the Supabase SQL editor |
+| `budget_paused` alert | Monthly LLM cap reached | Raise `GLOBAL_MONTHLY_LLM_CAP_USD` or wait; fetching continued, nothing was lost |
+| `canary_message_content` alert | Discord returns messages with empty content — the MESSAGE_CONTENT intent was lost | Re-enable the intent in the Discord developer portal |
+| `mass_failure` alert | A classify batch processed items but classified zero | Check ANTHROPIC_API_KEY validity and the worker logs |
+| Items fetched but never classified | No Anthropic key, daily budget spent, or a batch is still processing (30-min cadence) | Dashboard budget tile + worker logs show which |
+| Nothing happens after saving a monitor | Producer runs every 5 min; worker may be down | Railway logs; `select * from pgmq.metrics('pipeline_jobs');` |
+
+More depth: [docs/runbook/operator.md](./docs/runbook/operator.md).
+
+## Development
+
+```sh
+pnpm typecheck · pnpm test · pnpm build      # whole workspace
+pnpm --filter @socialmonitor/shared test     # one package
+pnpm --filter @socialmonitor/pipeline dev    # worker (FIXTURE_MODE=1 for fixtures)
+pnpm --filter web dev                        # web app
+```
 
 | Path | What |
 |---|---|
-| `apps/web` | Next.js app — auth, connections, monitor config, dashboard, /ask, summaries |
-| `packages/pipeline` | Worker (Railway) — queue consumer, source adapters, classifier, themes |
-| `packages/db` | Supabase migrations + typed query layer |
-| `packages/shared` | Zod schemas, constants, pure pipeline functions |
+| `packages/shared` | Zod schemas (monitor config, classification), constants, pure functions |
+| `packages/db` | Migrations (`supabase/migrations/`), postgres.js client |
+| `packages/pipeline` | Worker: queue consumer, 5 source adapters, classifier, summaries |
+| `apps/web` | Next.js app: auth, connections, monitors, dashboard, /ask |
 
-## Develop
-
-```sh
-pnpm install
-pnpm typecheck && pnpm test && pnpm build
-pnpm --filter @socialmonitor/pipeline dev   # worker (FIXTURE_MODE=1 for fixtures)
-pnpm --filter web dev                       # web app
-```
+Architecture rules that matter when extending (cursor contract, error classes, prompt
+discipline, how to add a source): [docs/runbook/engineer.md](./docs/runbook/engineer.md)
+and [SPEC.md](./SPEC.md).

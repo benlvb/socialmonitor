@@ -1,0 +1,74 @@
+# Engineer runbook — extending socialmonitor
+
+## What this is
+A pnpm monorepo: Next.js web (`apps/web`, Vercel), a queue-consuming worker
+(`packages/pipeline`, Railway/Docker), Supabase as database + pgmq queue + pg_cron
+producer + Vault + auth. `SPEC.md` records the 22 design decisions (D1–D22); this file is
+the working knowledge on top of it.
+
+## Data flow (one sentence each)
+1. `pg_cron` runs `enqueue_due_jobs()` every 5 min → coarse `(monitor, source, kind)`
+   jobs into pgmq `pipeline_jobs` (cadence per monitor config; dispatch bookkeeping in
+   `sync_streams` rows named `dispatch/<kind>`).
+2. Worker (`src/index.ts`) reads with a 15-min visibility timeout, poison-pill archives
+   after 5 reads, expands each job to streams via the source adapter, single-flights each
+   stream with an advisory lock.
+3. Fetch (`runner.ts`) obeys the cursor contract; raw items land immediately in
+   partitioned `raw_items` with full column lists.
+4. Classify (`classify/engine.ts`) is anti-join-driven (no cursor): prefilter → budgets →
+   prompt build → Anthropic **Batch** submitted on one tick, collected on the next
+   (batch id persisted in stream meta) → `item_classifications` → `mergeTheme`.
+5. Web reads under RLS; the service path (corrections, /ask tools, Vault writes) always
+   verifies ownership through an RLS query first.
+
+## Invariants — do not break
+- **Cursor contract:** hold on any batch failure; `PerItemError` drop-and-continue,
+  `TransientError` hold, `SystemicError` increments the breaker (trips at 3). Forward-only
+  first sync. Never advance past an unprocessed item.
+- **Template-first (D22):** missing credentials are a *state*, not an error. `status()`
+  never throws; unconfigured streams skip silently.
+- **Prompt discipline:** static prefix / `PROMPT_CACHE_MARKER` / data last; defang
+  (`defangPromptMarkers`) every scraped string entering any prompt (classifier, summary,
+  /ask tool results); never render tags in the dedup shortlist (measured 79% copy
+  contamination in the reference system).
+- **Full column lists on every INSERT** (a re-INSERT omitting a column silently blanks
+  it); timestamptz UTC everywhere; idempotent upserts.
+- **Theme counters are lifetime** — label them wherever a model or human sees them;
+  weekly evidence comes from item-level aggregates windowed by `posted_at`.
+- **Extensionless relative imports** in packages (Turbopack has no `.js`→`.ts` alias in
+  transpiled workspace packages).
+- **Sanitize** (`DOMPurify`) anything rendered via `dangerouslySetInnerHTML` — model
+  output can echo attacker-controlled scraped content.
+
+## Adding a source
+Implement `SourceAdapter` (`adapters/types.ts`): `status`, `testConnection`,
+`streams(monitor, targets)`, `fetch(ctx)` (+ optional `refreshMetrics`), throwing the
+typed errors. Add fixtures (`fixtures/<source>.json`) replayed on first-run in fixture
+mode, register in `adapters/registry.ts`, add env keys to `credentials.ts` ENV_KEYS +
+`.env.example`, a card in the Connections page, target kinds in `shared/constants.ts`
+TARGET_KINDS, and a categorical color slot in `globals.css`/`charts.tsx` (fixed order —
+run the dataviz validator on any palette change).
+
+## Adding an /ask tool
+`apps/web/lib/ask-tools.ts`: add the def (name/description/JSON schema) and the case in
+`runAskTool` — clamp ints, bind strings, cap rows/chars, defang text fields. The route
+loop, gating, and usage recording come for free.
+
+## Infra map
+- GitHub `benlvb/socialmonitor` (private) · Vercel root `apps/web` · Railway builds
+  `packages/pipeline/Dockerfile` via root `railway.toml` · Supabase owns DB/queue/cron/
+  Vault/auth. Migrations in `packages/db/supabase/migrations`, applied with
+  `supabase db push` (no local Docker needed).
+- LLM: Haiku 4.5 (batch) classify, Sonnet 5 narrate — model strings are config/env
+  (`CLASSIFY_MODEL`/`NARRATE_MODEL`), per-monitor overridable. Cost model + cap in
+  `classify/anthropic.ts` (`GLOBAL_CAP_USD`).
+
+## Verification
+`pnpm typecheck && pnpm test && pnpm build` gates every change. Fixture mode
+(`FIXTURE_MODE=1` + a DB) is the end-to-end harness. Live-source changes get a shakedown
+against real credentials (expect field drift vs fixtures — that trade-off is D22).
+
+## Known deferred items (v2 parking lot)
+Authors/spikes dashboard · review queue · Slack notifier · official X API adapter ·
+breaker-reset button in the UI (SQL-only today) · embedding-based cross-source
+clustering · multi-tenant signup/billing.
