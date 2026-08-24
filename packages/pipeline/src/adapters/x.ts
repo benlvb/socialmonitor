@@ -1,6 +1,7 @@
-import { TransientError, SystemicError, errorFromStatus, type ItemRef, type MetricsRow, type RawItem } from "@socialmonitor/shared";
+import { TransientError, clampFutureDate, errorFromStatus, type ItemRef, type MetricsRow, type RawItem } from "@socialmonitor/shared";
 import type { Db } from "@socialmonitor/db";
-import { getStreamState, updateStreamMeta, type MonitorRow, type TargetRow } from "../db/repos";
+import { getStreamState, hasEventToday, updateStreamMeta, type MonitorRow, type TargetRow } from "../db/repos";
+import { logEvent } from "../events";
 import type { FetchContext, FetchResult, SourceAdapter, StreamDef } from "./types";
 import { resolveCredentials } from "./credentials";
 import { fixtureMode, loadFixture } from "./fixtures";
@@ -56,7 +57,7 @@ function parseTweet(monitorId: string, stream: string, t: ApiTweet): RawItem | n
     authorName: t.author?.name ?? "",
     authorFollowers: t.author?.followers ?? null,
     content: t.text,
-    postedAt,
+    postedAt: clampFutureDate(postedAt),
     parentExternalId: t.inReplyToId ?? "",
     context: {},
     metrics: {
@@ -143,7 +144,7 @@ export const xAdapter: SourceAdapter = {
   },
 
   async fetch(ctx: FetchContext): Promise<FetchResult> {
-    const { sql, monitor, stream, cursor } = ctx;
+    const { sql, monitor, stream, cursor, cursorMeta } = ctx;
     if (fixtureMode()) {
       if (cursor) return { items: [], nextCursor: null };
       const tweets = await loadFixture<ApiTweet[]>("x");
@@ -157,29 +158,46 @@ export const xAdapter: SourceAdapter = {
     const creds = await resolveCredentials(sql, monitor.owner_id, "x_scraper");
     if (!creds) return { items: [], nextCursor: null };
 
-    // Forward-only first sync (audit #16): backfill is a deliberate action.
+    // Forward-only first sync (SPEC §9): backfill is a deliberate action.
     if (!cursor) {
       return { items: [], nextCursor: String(Math.floor(Date.now() / 1000)) };
     }
 
     const target = stream.target!;
     const isMentions = stream.stream.startsWith("mentions/");
-    let query = isMentions
+    const base = isMentions
       ? `@${target.value.replace(/^@/, "")}`
       : target.kind === "account"
         ? `from:${target.value}`
         : target.value;
-    query += ` since_time:${cursor}`;
+
+    /**
+     * Search returns newest-first and pagination walks older, so ending early
+     * (page cap or budget) leaves a hole between the oldest page and the
+     * cursor. Advancing to "newest seen" would skip that hole forever
+     * (audit #4). Instead the window is walked to completion across runs:
+     *   pending_until  — how far down we got; the next run resumes there
+     *   pending_newest — the newest timestamp seen, which becomes the cursor
+     *                    once the window is fully covered
+     */
+    const meta = cursorMeta as { pending_until?: number | null; pending_newest?: number | null };
+    const pendingUntil = meta.pending_until ?? null;
+    const pendingNewest = meta.pending_newest ?? null;
+
+    let query = `${base} since_time:${cursor}`;
+    if (pendingUntil) query += ` until_time:${pendingUntil}`;
 
     const items: RawItem[] = [];
     let dropped = 0;
     let pageCursor: string | undefined;
+    let completed = false;
+    let budgetStopped = false;
     const maxPages = monitor.config.limits.max_pages_per_fetch;
 
     for (let page = 0; page < maxPages; page++) {
-      // Budget check per API call, not per run (audit #15).
+      // Budget is consumed per API call, not per run (audit #15).
       if (!(await takeReadBudget(sql, monitor))) {
-        console.log(`[x] ${monitor.name}: daily API read budget spent`);
+        budgetStopped = true;
         break;
       }
       const params: Record<string, string> = { query, queryType: "Latest" };
@@ -193,16 +211,53 @@ export const xAdapter: SourceAdapter = {
       for (const t of tweets) {
         const item = parseTweet(monitor.id, stream.stream, t);
         if (item) items.push(item);
-        else dropped++; // per-item: drop and continue (SPEC error classes)
+        else dropped++; // per-item: drop and continue
       }
-      if (!data.has_next_page || !data.next_cursor || tweets.length === 0) break;
+      if (!data.has_next_page || !data.next_cursor || tweets.length === 0) {
+        completed = true;
+        break;
+      }
       pageCursor = data.next_cursor;
     }
 
-    const newest = items.reduce((max, i) => Math.max(max, i.postedAt.getTime() / 1000), 0);
+    const secs = (d: Date): number => Math.floor(d.getTime() / 1000);
+    const newestThisRun = items.reduce((m, i) => Math.max(m, secs(i.postedAt)), 0);
+    const oldestThisRun = items.reduce(
+      (m, i) => Math.min(m, secs(i.postedAt)),
+      Number.MAX_SAFE_INTEGER,
+    );
+    const newestOverall = Math.max(pendingNewest ?? 0, newestThisRun, Number(cursor));
+
+    if (completed) {
+      // Window fully covered — jump to the newest point we ever saw.
+      return {
+        items,
+        nextCursor: String(newestOverall),
+        cursorMeta: { pending_until: null, pending_newest: null },
+        droppedCount: dropped,
+      };
+    }
+
+    // Incomplete: HOLD the contiguous cursor and remember where to resume.
+    if (!(await hasEventToday(sql, monitor.id, "coverage_gap"))) {
+      await logEvent(sql, {
+        monitorId: monitor.id,
+        source: "x",
+        stream: stream.stream,
+        level: "warn",
+        kind: "coverage_gap",
+        message: budgetStopped
+          ? `daily X read budget reached mid-window; the remaining window resumes next run`
+          : `more than ${maxPages} pages in one window; the remainder resumes next run (raise limits.max_pages_per_fetch if this persists)`,
+      });
+    }
     return {
       items,
-      nextCursor: newest > 0 ? String(Math.floor(newest)) : null,
+      nextCursor: null,
+      cursorMeta: {
+        pending_until: oldestThisRun === Number.MAX_SAFE_INTEGER ? pendingUntil : oldestThisRun,
+        pending_newest: newestOverall,
+      },
       droppedCount: dropped,
     };
   },

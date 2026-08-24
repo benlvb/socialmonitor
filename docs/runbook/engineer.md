@@ -33,8 +33,16 @@ the working knowledge on top of it.
   contamination in the reference system).
 - **Full column lists on every INSERT** (a re-INSERT omitting a column silently blanks
   it); timestamptz UTC everywhere; idempotent upserts.
-- **Theme counters are lifetime** — label them wherever a model or human sees them;
-  weekly evidence comes from item-level aggregates windowed by `posted_at`.
+- **Theme rows are recomputed, never incremented** (`recomputeTheme`): counts stay
+  truthful after corrections. Weekly evidence still comes from item-level aggregates
+  windowed by `posted_at`; `/ask` labels theme counters "lifetime".
+- **Cursors only advance over contiguous coverage.** If a fetch ends early (page cap,
+  budget), hold the cursor or record where to resume — never jump to "newest seen", and
+  emit `coverage_gap` so it is not silent.
+- **A target's UUID is its stream identity** — upsert targets, never delete-and-recreate.
+- **Wire JSON Schemas may use only the supported keyword subset** (no `maxItems`,
+  `minimum`, `maxLength`…): the schema is attached raw, so nothing strips them. Enforce
+  bounds locally in Zod and express them as `description` text.
 - **Extensionless relative imports** in packages (Turbopack has no `.js`→`.ts` alias in
   transpiled workspace packages).
 - **Sanitize** (`DOMPurify`) anything rendered via `dangerouslySetInnerHTML` — model

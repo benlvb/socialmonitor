@@ -44,6 +44,12 @@ export async function runJob(sql: Db, job: JobPayload): Promise<void> {
         kind: "summary_failed",
         message: `weekly summary failed: ${String(err)}`,
       });
+      // Clear the dispatch marker so the producer can re-dispatch instead of
+      // waiting a week (the message itself is consumed either way — audit #18).
+      await sql`
+        delete from sync_streams
+        where monitor_id = ${monitor.id} and source = '_system'
+          and stream = 'dispatch/weekly_summary'`;
     }
     return;
   }

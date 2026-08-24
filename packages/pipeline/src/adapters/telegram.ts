@@ -1,4 +1,4 @@
-import { SystemicError, TransientError, type RawItem } from "@socialmonitor/shared";
+import { SystemicError, TransientError, clampFutureDate, type RawItem } from "@socialmonitor/shared";
 import type { MonitorRow, TargetRow } from "../db/repos";
 import type { FetchContext, FetchResult, SourceAdapter, StreamDef } from "./types";
 import { resolveCredentials, type Credentials } from "./credentials";
@@ -166,18 +166,27 @@ export const telegramAdapter: SourceAdapter = {
       const forwards = Number(m?.forwards ?? 0);
       const replies = Number(m?.replies?.replies ?? 0);
       const views = m?.views != null ? Number(m.views) : null;
+      // Attribute to the real sender (audit #8): using the channel name for
+      // every message collapsed author_count — the system's ranking metric —
+      // to 1 for every group. Broadcast posts legitimately fall back to it.
+      const senderId = m?.senderId != null ? String(m.senderId) : "";
+      const senderHandle: string =
+        (typeof m?.sender?.username === "string" && m.sender.username) ||
+        (senderId ? `tg:${senderId}` : username);
+      const senderName: string =
+        [m?.sender?.firstName, m?.sender?.lastName].filter(Boolean).join(" ") || senderHandle;
       items.push({
         monitorId: monitor.id,
         source: "telegram",
         externalId: `${username}:${id}`,
         stream: stream.stream,
         url: `https://t.me/${username}/${id}`,
-        authorId: String(m?.senderId ?? username),
-        authorHandle: username,
-        authorName: username,
+        authorId: senderId || username,
+        authorHandle: senderHandle,
+        authorName: senderName,
         authorFollowers: null,
         content: text,
-        postedAt: new Date(date * 1000),
+        postedAt: clampFutureDate(new Date(date * 1000)),
         parentExternalId: m?.replyTo?.replyToMsgId ? `${username}:${m.replyTo.replyToMsgId}` : "",
         context: { channel_name: username },
         metrics: { views, forwards, replies },

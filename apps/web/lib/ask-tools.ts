@@ -4,8 +4,8 @@ import { defangPromptMarkers } from "@socialmonitor/shared";
 /**
  * /ask tool layer (D17): thin parameterized queries. The model never sees SQL.
  * Integers clamped, strings bound, row/char caps. All read-only.
- * Theme counters are LIFETIME cumulative (mergeTheme only grows them) — they
- * are labeled as such; weekly windows come from item-level aggregates.
+ * Theme counters are LIFETIME totals (recomputed from all relevant items) —
+ * they are labeled as such; weekly windows come from item-level aggregates.
  */
 
 const clamp = (v: unknown, def: number, lo: number, hi: number): number => {

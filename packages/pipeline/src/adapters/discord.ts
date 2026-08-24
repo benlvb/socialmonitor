@@ -181,8 +181,12 @@ export const discordAdapter: SourceAdapter = {
       threads?: { id: string; name?: string }[];
     };
     const all = [
-      ...channelList.filter((c) => c.type === 0).map((c) => ({ id: c.id, name: c.name ?? "" })),
-      ...(threads.threads ?? []).map((t) => ({ id: t.id, name: t.name ?? "" })),
+      ...channelList
+        .filter((c) => c.type === 0)
+        .map((c) => ({ id: c.id, name: c.name ?? "", isThread: false })),
+      // A thread's id encodes its creation time, so a new thread can start
+      // from its own beginning instead of losing its opening messages (audit #13).
+      ...(threads.threads ?? []).map((t) => ({ id: t.id, name: t.name ?? "", isThread: true })),
     ];
 
     const items: RawItem[] = [];
@@ -194,7 +198,11 @@ export const discordAdapter: SourceAdapter = {
     for (const channel of all) {
       // Per-channel forward-only first sync: no cursor -> start at now, fetch nothing.
       // (Legacy guild-wide cursor is honored as the starting point once.)
-      const startCursor = channelCursors[channel.id] ?? cursor;
+      let startCursor = channelCursors[channel.id] ?? cursor;
+      if (!startCursor && channel.isThread) {
+        // (id - 1) so the thread's first message is included.
+        startCursor = (BigInt(channel.id) - 1n).toString();
+      }
       if (!startCursor) {
         updatedCursors[channel.id] = datetimeToSnowflake(new Date());
         continue;
@@ -261,11 +269,19 @@ export const discordAdapter: SourceAdapter = {
       };
     }
 
+    // Prune cursors for channels/threads that are gone (deleted, archived, or
+    // no longer visible) so cursor_meta cannot grow without bound (audit #13).
+    const live = new Set(all.map((c) => c.id));
+    const pruned: Record<string, string> = {};
+    for (const [id, value] of Object.entries(updatedCursors)) {
+      if (live.has(id)) pruned[id] = value;
+    }
+
     await attachNeighbors(sql, monitor.id, items);
     return {
       items,
       nextCursor: null, // per-channel cursors live in cursorMeta
-      cursorMeta: { channels: updatedCursors, canary_strikes: 0 },
+      cursorMeta: { channels: pruned, canary_strikes: 0 },
       droppedCount: dropped,
     };
   },

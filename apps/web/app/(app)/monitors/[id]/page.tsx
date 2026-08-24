@@ -33,6 +33,8 @@ export default async function MonitorDashboard({ params }: { params: Promise<{ i
         .from("sync_streams")
         .select("source, stream, cursor, consecutive_failures, breaker_tripped_at, last_run_at, last_success_at, rows_total")
         .eq("monitor_id", id)
+        .not("stream", "like", "dispatch/%")
+        .not("stream", "like", "%_budget")
         .order("source"),
       supabase
         .from("pipeline_events")
@@ -40,7 +42,7 @@ export default async function MonitorDashboard({ params }: { params: Promise<{ i
         .eq("monitor_id", id)
         .order("created_at", { ascending: false })
         .limit(15),
-      supabase.from("llm_usage").select("day, calls, cost_usd").eq("monitor_id", id)
+      supabase.from("llm_usage").select("day, calls, classify_calls, cost_usd").eq("monitor_id", id)
         .gte("day", new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10)),
       supabase.from("raw_items").select("*", { count: "exact", head: true }).eq("monitor_id", id).gte("fetched_at", since7d),
       supabase.from("item_classifications").select("*", { count: "exact", head: true }).eq("monitor_id", id).eq("relevant", true).gte("classified_at", since7d),
@@ -70,7 +72,9 @@ export default async function MonitorDashboard({ params }: { params: Promise<{ i
 
   const usage = usageRes.data ?? [];
   const monthCost = usage.reduce((s, u) => s + Number(u.cost_usd), 0);
-  const todayCalls = usage.find((u) => u.day === new Date().toISOString().slice(0, 10))?.calls ?? 0;
+  // classify_calls, not calls: /ask and summaries share the table but not this budget.
+  const todayCalls =
+    usage.find((u) => u.day === new Date().toISOString().slice(0, 10))?.classify_calls ?? 0;
   const config = monitor.config as { budgets?: { daily_classifications?: number } };
   const dailyBudget = config.budgets?.daily_classifications ?? 500;
 

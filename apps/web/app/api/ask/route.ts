@@ -41,6 +41,11 @@ const BodySchema = z.object({
 
 const SIGN_SECRET =
   process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.ANTHROPIC_API_KEY ?? "socialmonitor-dev";
+if (SIGN_SECRET === "socialmonitor-dev") {
+  console.warn(
+    "[ask] approval-gate signing key falling back to a constant — set SUPABASE_SERVICE_ROLE_KEY",
+  );
+}
 
 function signTurn(monitorId: string, turn: unknown): string {
   return createHmac("sha256", SIGN_SECRET)
@@ -214,7 +219,10 @@ ${JSON.stringify(digest)}`;
       const finalRound = round === MAX_TOOL_ROUNDS;
       const response = await client.messages.create({
         model,
-        max_tokens: 2000,
+        // Adaptive thinking spends from max_tokens; 2000 produced empty
+        // replies on real data volumes (audit #15).
+        max_tokens: 8000,
+        output_config: { effort: "low" },
         system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
         tools: ASK_TOOLS.map((t) => ({
           name: t.name,

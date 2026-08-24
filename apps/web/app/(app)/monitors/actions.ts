@@ -139,6 +139,37 @@ export async function updateMonitor(
 export async function deleteMonitor(monitorId: string): Promise<void> {
   const { supabase, user } = await requireUser();
   if (!user) return;
+  // Ownership check first; the data tables carry no FK to monitors, so their
+  // rows would otherwise linger forever, invisible under RLS (audit #17).
+  const { data: owned } = await supabase
+    .from("monitors")
+    .select("id")
+    .eq("id", monitorId)
+    .single();
+  if (!owned) return;
+
+  const sqlDb = createDb();
+  if (sqlDb) {
+    try {
+      await sqlDb.begin(async (tx) => {
+        for (const table of [
+          "raw_items",
+          "item_classifications",
+          "themes",
+          "metrics_history",
+          "llm_usage",
+          "sync_streams",
+          "pipeline_events",
+        ]) {
+          await tx`delete from ${tx(table)} where monitor_id = ${monitorId}`;
+        }
+      });
+    } catch (err) {
+      console.error("[monitors] purge failed", err);
+    } finally {
+      await sqlDb.end({ timeout: 3 });
+    }
+  }
   await supabase.from("monitors").delete().eq("id", monitorId);
   redirect("/");
 }

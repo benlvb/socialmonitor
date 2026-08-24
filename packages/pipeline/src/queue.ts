@@ -12,6 +12,36 @@ export interface QueuedJob {
   payload: JobPayload | null; // null = malformed, archive it
 }
 
+/**
+ * Advisory locks are SESSION-scoped and this code locks and unlocks in separate
+ * statements. On Supabase's TRANSACTION pooler those can land on different
+ * backends: the lock leaks, pg_try_advisory_lock then always returns false, and
+ * withStreamLock reads that as "another worker has it" — every stream stops
+ * running while the dashboard looks idle-green (audit #11).
+ * Probe once at startup so this fails loudly instead.
+ */
+export async function checkSessionAffinity(sql: Db): Promise<{ ok: boolean; detail: string }> {
+  const reserved = await sql.reserve();
+  try {
+    const key = 987654321;
+    const [locked] = await reserved`select pg_try_advisory_lock(${key}) as ok`;
+    if (!locked?.ok) {
+      return { ok: false, detail: "probe lock was already held — stale locks from a pooled session?" };
+    }
+    const [unlocked] = await reserved`select pg_advisory_unlock(${key}) as ok`;
+    if (!unlocked?.ok) {
+      return {
+        ok: false,
+        detail:
+          "lock and unlock landed on different backends — DATABASE_URL looks like the TRANSACTION pooler (port 6543). Use the SESSION pooler connection string.",
+      };
+    }
+    return { ok: true, detail: "session affinity verified" };
+  } finally {
+    reserved.release();
+  }
+}
+
 export async function readJobs(sql: Db, qty: number): Promise<QueuedJob[]> {
   const rows = await sql`
     select msg_id, read_ct, message from pgmq.read(${QUEUE}, ${VT_SECONDS}, ${qty})`;

@@ -165,7 +165,10 @@ ${JSON.stringify(data, null, 2)}`;
   const model = monitor.config.model.narrate || DEFAULT_NARRATE_MODEL;
   const response = await client.messages.create({
     model,
-    max_tokens: 4096,
+    // Thinking is on by default on current models and spends from max_tokens —
+    // 4096 produced spurious truncation alerts (audit #15).
+    max_tokens: 16000,
+    output_config: { effort: "medium" },
     messages: [{ role: "user", content: prompt }],
   });
 

@@ -127,7 +127,8 @@ export async function markStreamFailure(
 }
 
 /** Store raw immediately; idempotent; FULL column list (omitted-column blanking rule). */
-export async function insertRawItems(sql: Db, items: RawItem[]): Promise<number> {
+export async function insertRawItems(sql: Db, itemsIn: RawItem[]): Promise<number> {
+  let items = itemsIn;
   if (items.length === 0) return 0;
   // Clamp far-future posted_at (scheduled premieres, clock skew): such rows land
   // in raw_items_default and later make partition creation error (audit #5).
@@ -138,6 +139,13 @@ export async function insertRawItems(sql: Db, items: RawItem[]): Promise<number>
       i.postedAt = new Date();
     }
   }
+  // Postgres raises 21000 if one ON CONFLICT statement touches a row twice —
+  // pagination-boundary overlap makes that reachable (audit #10).
+  const byKey = new Map<string, RawItem>();
+  for (const i of items) {
+    byKey.set(`${i.monitorId}|${i.source}|${i.externalId}|${i.postedAt.toISOString()}`, i);
+  }
+  items = [...byKey.values()];
   const rows = items.map((i) => ({
     monitor_id: i.monitorId,
     source: i.source,
@@ -185,14 +193,17 @@ export async function getUnclassifiedItems(
   source: Source,
   limit: number,
 ): Promise<UnclassifiedItem[]> {
+  // DISTINCT ON: a clamped-then-refetched item can exist under two posted_at
+  // values, and a duplicate custom_id would 400 the whole batch (audit #10).
   return (await sql`
-    select r.external_id, r.stream, r.url, r.author_handle, r.author_name,
+    select distinct on (r.external_id)
+           r.external_id, r.stream, r.url, r.author_handle, r.author_name,
            r.author_followers, r.content, r.posted_at, r.context
     from raw_items r
     left join item_classifications c
       on c.monitor_id = r.monitor_id and c.source = r.source and c.external_id = r.external_id
     where r.monitor_id = ${monitorId} and r.source = ${source} and c.external_id is null
-    order by r.posted_at asc
+    order by r.external_id, r.posted_at asc
     limit ${limit}`) as unknown as UnclassifiedItem[];
 }
 

@@ -1,4 +1,6 @@
-import { TransientError, errorFromStatus, type RawItem } from "@socialmonitor/shared";
+import { TransientError, clampFutureDate, errorFromStatus, type RawItem } from "@socialmonitor/shared";
+import { hasEventToday } from "../db/repos";
+import { logEvent } from "../events";
 import type { Db } from "@socialmonitor/db";
 import type { MonitorRow, TargetRow } from "../db/repos";
 import type { FetchContext, FetchResult, SourceAdapter, StreamDef } from "./types";
@@ -103,7 +105,7 @@ function parseThing(monitorId: string, stream: string, thing: RedditThing, paren
     authorName: d.author ?? "",
     authorFollowers: null,
     content,
-    postedAt: new Date(d.created_utc * 1000),
+    postedAt: clampFutureDate(new Date(d.created_utc * 1000)),
     parentExternalId: "",
     context: {
       ...(d.subreddit ? { channel_name: `r/${d.subreddit}` } : {}),
@@ -186,25 +188,75 @@ export const redditAdapter: SourceAdapter = {
     }
 
     const target = stream.target;
-    let raw: RedditThing[] = [];
-
+    let path: string;
+    const params: Record<string, string> = { limit: "100" };
     if (target?.kind === "subreddit") {
-      const data = (await apiGet(creds, `/r/${target.value}/new`, { limit: "100" })) as { data?: { children?: RedditThing[] } };
-      raw = data.data?.children ?? [];
+      path = `/r/${target.value}/new`;
     } else if (target?.kind === "keyword") {
-      const data = (await apiGet(creds, "/search", { q: target.value, sort: "new", limit: "100", type: "link" })) as { data?: { children?: RedditThing[] } };
-      raw = data.data?.children ?? [];
+      path = "/search";
+      params.q = target.value;
+      params.sort = "new";
+      params.type = "link";
     } else if (target?.kind === "user") {
-      const data = (await apiGet(creds, `/user/${target.value}/overview`, { sort: "new", limit: "100" })) as { data?: { children?: RedditThing[] } };
-      raw = data.data?.children ?? [];
+      path = `/user/${target.value}/overview`;
+      params.sort = "new";
+    } else {
+      return { items: [], nextCursor: null };
     }
 
-    const parsed = raw.map((t) => parseThing(monitor.id, stream.stream, t)).filter((i): i is RawItem => i !== null);
-    const items = newerThan(parsed, cursor);
+    // Listings are reverse-chronological with `after` pagination. Walk pages
+    // until the window is covered (an item older than the cursor) or the
+    // listing ends; stopping at the page cap means the window is INCOMPLETE
+    // and the cursor must hold, or the gap is skipped forever (audit #4).
+    const maxPages = monitor.config.limits.max_pages_per_fetch;
+    const cursorSecs = Number(cursor);
+    const parsed: RawItem[] = [];
+    let dropped = 0;
+    let after: string | undefined;
+    let completed = false;
+
+    for (let page = 0; page < maxPages; page++) {
+      const pageParams = after ? { ...params, after } : params;
+      const data = (await apiGet(creds, path, pageParams)) as {
+        data?: { children?: RedditThing[]; after?: string | null };
+      };
+      const children = data.data?.children ?? [];
+      let reachedCursor = false;
+      for (const thing of children) {
+        const item = parseThing(monitor.id, stream.stream, thing);
+        if (!item) {
+          dropped++;
+          continue;
+        }
+        if (item.postedAt.getTime() / 1000 <= cursorSecs) {
+          reachedCursor = true; // walked back past the cursor: window covered
+          continue;
+        }
+        parsed.push(item);
+      }
+      if (reachedCursor || !data.data?.after || children.length === 0) {
+        completed = true;
+        break;
+      }
+      after = data.data.after;
+    }
+
+    if (!completed && !(await hasEventToday(sql, monitor.id, "coverage_gap"))) {
+      await logEvent(sql, {
+        monitorId: monitor.id,
+        source: "reddit",
+        stream: stream.stream,
+        level: "warn",
+        kind: "coverage_gap",
+        message: `listing still had pages after ${maxPages}; cursor held so the remainder is refetched next run`,
+      });
+    }
+
     return {
-      items,
-      nextCursor: nextCursorFrom(items, cursor),
-      droppedCount: raw.length - parsed.length,
+      items: parsed,
+      // Hold on an incomplete walk — refetching overlap is free and idempotent.
+      nextCursor: completed ? nextCursorFrom(parsed, cursor) : null,
+      droppedCount: dropped,
     };
   },
 };

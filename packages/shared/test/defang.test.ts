@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defangPromptMarkers, flattenForPrompt } from "../src/defang";
+import { clampFutureDate } from "../src/items";
 
 describe("defangPromptMarkers", () => {
   it("neutralizes injected instruction markers", () => {
@@ -25,5 +26,19 @@ describe("flattenForPrompt", () => {
   });
   it("handles null-ish", () => {
     expect(flattenForPrompt(undefined as unknown as string)).toBe("");
+  });
+});
+
+describe("clampFutureDate (audit #9)", () => {
+  it("clamps a far-future timestamp to now", () => {
+    const future = new Date(Date.now() + 60 * 864e5);
+    const clamped = clampFutureDate(future);
+    expect(clamped.getTime()).toBeLessThanOrEqual(Date.now() + 1000);
+  });
+  it("leaves past and near-now timestamps untouched", () => {
+    const past = new Date(Date.now() - 3600_000);
+    expect(clampFutureDate(past).getTime()).toBe(past.getTime());
+    const skew = new Date(Date.now() + 60_000);
+    expect(clampFutureDate(skew).getTime()).toBe(skew.getTime());
   });
 });

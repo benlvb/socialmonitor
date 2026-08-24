@@ -1,5 +1,5 @@
 import { createDb } from "@socialmonitor/db";
-import { archiveJob, deleteJob, readJobs, shouldArchive } from "./queue";
+import { archiveJob, checkSessionAffinity, deleteJob, readJobs, shouldArchive } from "./queue";
 import { runJob } from "./runner";
 import { logEvent } from "./events";
 import { notify } from "./notify";
@@ -30,6 +30,18 @@ async function main(): Promise<void> {
 
   process.on("SIGTERM", () => (shuttingDown = true));
   process.on("SIGINT", () => (shuttingDown = true));
+
+  const affinity = await checkSessionAffinity(db);
+  if (!affinity.ok) {
+    await logEvent(db, {
+      level: "error",
+      kind: "pooler_misconfigured",
+      message: `advisory-lock session affinity check FAILED: ${affinity.detail}`,
+    });
+    console.error(`[worker] ${affinity.detail}`);
+  } else {
+    console.log(`[worker] ${affinity.detail}`);
+  }
 
   // Global ops watch: monitor-less error events (e.g. partition_maintenance_failed
   // raised inside pg_cron) are invisible to the UI since events went owner-scoped
@@ -66,7 +78,11 @@ async function main(): Promise<void> {
     }
 
     await Promise.all(
+      // Every job is fully guarded: an exception from archiveJob/logEvent used
+      // to escape Promise.all and kill the process, and Railway's restart cap
+      // could then stop the worker permanently on a DB blip (audit #21).
       jobs.map(async (job) => {
+       try {
         if (shouldArchive(job)) {
           await archiveJob(db, job.msgId);
           if (job.payload === null) {
@@ -94,6 +110,9 @@ async function main(): Promise<void> {
           // protection above archives after repeated failures.
           console.error(`[worker] job ${job.msgId} failed`, err);
         }
+       } catch (outer) {
+        console.error(`[worker] job handling failed for ${job.msgId}`, outer);
+       }
       }),
     );
   }

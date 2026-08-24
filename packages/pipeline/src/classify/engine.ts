@@ -1,5 +1,6 @@
 import type { Db } from "@socialmonitor/db";
 import {
+  flattenForPrompt,
   DYNAMIC_EXAMPLES_PER_SIDE,
   classificationOutputSchema,
   buildClassificationJsonSchema,
@@ -130,7 +131,10 @@ export async function runClassify(sql: Db, monitor: MonitorRow, source: Source):
     }
     return;
   }
-  const todayCalls = await getTodayCalls(sql, monitor.id);
+  // Usage is recorded at COLLECTION, so a batch submitted this tick is not yet
+  // counted — include it or every source can overshoot by a batch a tick (audit #12).
+  const inFlight = meta.batch_id ? (meta.item_count ?? 0) : 0;
+  const todayCalls = (await getTodayCalls(sql, monitor.id)) + inFlight;
   const dailyBudget = monitor.config.budgets.daily_classifications;
   const remaining = Math.max(0, dailyBudget - todayCalls);
   if (remaining === 0) {
@@ -272,7 +276,10 @@ async function collectAndWrite(
         message: `Batch ${batchId}: ${processed} items processed, 0 classified successfully`,
       });
     }
-    return failedIds;
+    // Return NO per-item blame: attributing a wholesale failure (expired key,
+    // model outage, schema rejection) to the items would mark the entire
+    // backlog unclassifiable after two ticks (audit #6).
+    return [];
   }
 
   await markStreamSuccess(sql, monitor.id, source, CLASSIFY_STREAM, null, succeeded);
@@ -298,15 +305,21 @@ async function writeClassification(
   let matched = output.matched_existing_description.trim();
   let signalType = output.signal_type;
   if (matched) {
+    // The model only ever saw flattenForPrompt(description), so compare on the
+    // flattened form or a whitespace-collapsed key never matches (audit #20).
+    const flatMatched = flattenForPrompt(matched);
     const found = await sql`
-      select signal_type from themes
-      where monitor_id = ${monitor.id} and source = ${source} and description = ${matched}
-      order by (signal_type = ${output.signal_type}) desc
-      limit 1`;
-    if (found.length === 0) {
+      select signal_type, description from themes
+      where monitor_id = ${monitor.id} and source = ${source}
+      order by (signal_type = ${output.signal_type}) desc`;
+    const hit = found.find(
+      (row) => flattenForPrompt(row.description as string) === flatMatched,
+    );
+    if (!hit) {
       matched = ""; // hallucinated match — treat as a fresh description
     } else {
-      signalType = found[0]!.signal_type as string; // adopt the theme's type (PK part)
+      matched = hit.description as string; // canonical stored key
+      signalType = hit.signal_type as string; // adopt the theme's type (PK part)
     }
   }
   const description = output.relevant ? matched || output.description : "";

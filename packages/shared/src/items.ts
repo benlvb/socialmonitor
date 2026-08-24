@@ -35,3 +35,15 @@ export interface MetricsRow {
   impressions: number | null;
   engagement: number | null;
 }
+
+/**
+ * Cap a platform timestamp at "now" (audit #9). A future-dated item (scheduled
+ * premieres, clock skew) otherwise pushes a time-based cursor into the future,
+ * where every later run filters everything out and reports success — a stream
+ * dead until that date, invisible in the health panel. Clamping at PARSE time
+ * keeps the stored row and the computed cursor consistent.
+ */
+export function clampFutureDate(d: Date, toleranceMs = 5 * 60 * 1000): Date {
+  const now = Date.now();
+  return d.getTime() > now + toleranceMs ? new Date(now) : d;
+}

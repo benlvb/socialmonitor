@@ -70,13 +70,22 @@ Each step is independent. Stop at any point; everything done so far keeps workin
    npx supabase link --project-ref <ref>
    npx supabase db push
    ```
-3. Dashboard → Authentication → Sign In / Up: make sure **Email** provider is enabled
+3. Dashboard → Authentication: enable the **Email** provider, and **turn OFF public
+   sign-ups** once your own account exists. Signup is additionally gated in the database
+   (`app_allowlist`): the first account bootstraps itself and seeds the allowlist; every
+   later address must be added there first. Without a profile row a user cannot create a
+   monitor at all.
 4. Fill `.env` (Dashboard → Settings → API / Database):
    ```
    SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL        → Project URL
    SUPABASE_ANON_KEY / NEXT_PUBLIC_SUPABASE_ANON_KEY → anon public key
    SUPABASE_SERVICE_ROLE_KEY                      → service role key (server-only)
-   DATABASE_URL                                   → "Session pooler" connection string
+   DATABASE_URL                                   → "Session pooler" string (NOT the
+                                                     transaction pooler on :6543 — the
+                                                     worker's advisory locks are
+                                                     session-scoped and silently stop
+                                                     working there; it probes this at
+                                                     startup and logs pooler_misconfigured)
    ALLOWED_EMAILS                                 → your email (comma-separated list)
    ```
 5. `pnpm --filter web dev` → sign **up** with an allowlisted email → you're in.
@@ -121,7 +130,7 @@ button per integration) or as env vars — Vault wins when both exist.
 | **X / Twitter** | [twitterapi.io](https://twitterapi.io) → API key (pay-as-you-go scraper; the official X API can replace it later as an adapter swap) | `TWITTERAPI_IO_KEY` |
 | **Reddit** | [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) → create app, type **script** → client id + secret, plus that account's username/password | `REDDIT_CLIENT_ID` `REDDIT_CLIENT_SECRET` `REDDIT_USERNAME` `REDDIT_PASSWORD` |
 | **YouTube** | Google Cloud Console → enable **YouTube Data API v3** → API key. Free 10k units/day; keyword search costs 100/query and is budgeted per monitor | `YOUTUBE_API_KEY` |
-| **Telegram** | A **dedicated account on a spare number** (never your personal one). Get `api_id`/`api_hash` at [my.telegram.org](https://my.telegram.org), then run the session generator: `TELEGRAM_MTPROTO_API_ID=… TELEGRAM_MTPROTO_API_HASH=… pnpm --filter @socialmonitor/pipeline exec tsx ../../scripts/telegram-session.ts` | `TELEGRAM_MTPROTO_API_ID` `TELEGRAM_MTPROTO_API_HASH` `TELEGRAM_MTPROTO_SESSION` |
+| **Telegram** | A **dedicated account on a spare number** (never your personal one). Get `api_id`/`api_hash` at [my.telegram.org](https://my.telegram.org), then run the session generator: `TELEGRAM_MTPROTO_API_ID=… TELEGRAM_MTPROTO_API_HASH=… pnpm --filter @socialmonitor/pipeline exec tsx ../../scripts/telegram-session.ts`. One session string = one consumer: don't run two worker replicas on it (Telegram invalidates duplicated sessions). | `TELEGRAM_MTPROTO_API_ID` `TELEGRAM_MTPROTO_API_HASH` `TELEGRAM_MTPROTO_SESSION` |
 | **Discord** | [discord.com/developers](https://discord.com/developers/applications) → bot → enable the **MESSAGE_CONTENT** privileged intent → invite to your server with channel-level view permissions | `DISCORD_BOT_TOKEN` |
 | **Alerts** | BotFather → `/newbot` (a fresh bot). Add it to a private channel/group, post once, read the chat id from `https://api.telegram.org/bot<token>/getUpdates` | `TELEGRAM_NOTIFY_BOT_TOKEN` `TELEGRAM_NOTIFY_CHAT_ID` |
 
@@ -185,8 +194,10 @@ the fields that matter most:
 Copy the JSON out to export a monitor; paste to import. Save → the cron producer picks it
 up within ~5 minutes — or hit **Run now** on the dashboard to skip the wait. To pull
 history for a fresh monitor, use **Backfill** on the settings page (deliberate,
-idempotent, budget-respecting; Telegram pulls the latest ~100 per channel). Watch the
-dashboard's **Pipeline health** panel.
+idempotent, budget-respecting). Per source: X / Reddit / YouTube rewind by date and walk
+forward a page per run; Discord rewinds every channel it has already synced; Telegram
+rewinds a bounded number of messages from its current position and is skipped before its
+first sync. Watch the dashboard's **Pipeline health** panel.
 
 ## Day to day
 
@@ -215,6 +226,8 @@ dashboard's **Pipeline health** panel.
 | `canary_message_content` alert | Discord returns messages with empty content — the MESSAGE_CONTENT intent was lost | Re-enable the intent in the Discord developer portal |
 | `mass_failure` alert | A classify batch processed items but classified zero | Check ANTHROPIC_API_KEY validity and the worker logs |
 | Items fetched but never classified | No Anthropic key, daily budget spent, or a batch is still processing (30-min cadence) | Dashboard budget tile + worker logs show which |
+| `coverage_gap` warning | More content in one window than the page cap allows; the cursor held and the remainder resumes next run | Nothing lost. If it persists, raise `limits.max_pages_per_fetch` or shorten `cadence_minutes.fetch` |
+| `pooler_misconfigured` error | `DATABASE_URL` is the transaction pooler; advisory locks cannot work | Switch to the **Session pooler** string and restart the worker |
 | Nothing happens after saving a monitor | Producer runs every 5 min; worker may be down | **Run now** on the dashboard; if still nothing: Railway logs; `select * from pgmq.metrics('pipeline_jobs');` |
 
 More depth: [docs/runbook/operator.md](./docs/runbook/operator.md).

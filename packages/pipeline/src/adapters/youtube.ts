@@ -1,4 +1,6 @@
-import { SystemicError, TransientError, errorFromStatus, type ItemRef, type MetricsRow, type RawItem } from "@socialmonitor/shared";
+import { SystemicError, TransientError, clampFutureDate, errorFromStatus, type ItemRef, type MetricsRow, type RawItem } from "@socialmonitor/shared";
+import { hasEventToday } from "../db/repos";
+import { logEvent } from "../events";
 import type { Db } from "@socialmonitor/db";
 import type { MonitorRow, TargetRow } from "../db/repos";
 import type { FetchContext, FetchResult, SourceAdapter, StreamDef } from "./types";
@@ -66,7 +68,7 @@ function parseVideo(monitorId: string, stream: string, item: YtVideoItem): RawIt
     authorName: s.channelTitle ?? "",
     authorFollowers: null,
     content,
-    postedAt: new Date(s.publishedAt),
+    postedAt: clampFutureDate(new Date(s.publishedAt)),
     parentExternalId: "",
     context: { channel_name: s.channelTitle ?? "" },
     metrics: {},
@@ -110,7 +112,7 @@ function parseComment(monitorId: string, thread: YtCommentThread, parentText: st
     authorName: c.authorDisplayName ?? "",
     authorFollowers: null,
     content: text,
-    postedAt: new Date(c.publishedAt),
+    postedAt: clampFutureDate(new Date(c.publishedAt)),
     parentExternalId: `video:${vid}`,
     context: parentText ? { parent_text: parentText } : {},
     metrics: { likes: c.likeCount ?? 0 },
@@ -203,6 +205,7 @@ export const youtubeAdapter: SourceAdapter = {
 
     const target = stream.target!;
     let rawItems: YtVideoItem[] = [];
+    let completed = true;
 
     if (target.kind === "channel") {
       // Resolve channel -> uploads playlist (1 unit), then list uploads (1 unit).
@@ -215,33 +218,115 @@ export const youtubeAdapter: SourceAdapter = {
       })) as { items?: { contentDetails?: { relatedPlaylists?: { uploads?: string } } }[] };
       const uploads = ch.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
       if (!uploads) throw errorFromStatus(404, `channel not found: ${target.value}`);
-      const pl = (await apiGet(creds, "/playlistItems", {
-        part: "snippet",
-        playlistId: uploads,
-        maxResults: "50",
-      })) as { items?: YtVideoItem[] };
-      rawItems = pl.items ?? [];
+      // Uploads pagination is 1 quota unit per page — walk until the window
+      // is covered rather than truncating at 50 (audit #4).
+      const maxPages = monitor.config.limits.max_pages_per_fetch;
+      const cursorMs = new Date(cursor).getTime();
+      let pageToken: string | undefined;
+      completed = false;
+      for (let page = 0; page < maxPages; page++) {
+        const params: Record<string, string> = {
+          part: "snippet",
+          playlistId: uploads,
+          maxResults: "50",
+        };
+        if (pageToken) params.pageToken = pageToken;
+        const pl = (await apiGet(creds, "/playlistItems", params)) as {
+          items?: YtVideoItem[];
+          nextPageToken?: string;
+        };
+        const pageItems = pl.items ?? [];
+        rawItems.push(...pageItems);
+        const reachedCursor = pageItems.some(
+          (v) => new Date(v.snippet?.publishedAt ?? 0).getTime() <= cursorMs,
+        );
+        if (reachedCursor || !pl.nextPageToken || pageItems.length === 0) {
+          completed = true;
+          break;
+        }
+        pageToken = pl.nextPageToken;
+      }
     } else {
       // Keyword search — 100 units; budgeted.
       if (!(await takeSearchBudget(sql, monitor))) {
         console.log(`[youtube] ${monitor.name}: daily search budget spent`);
         return { items: [], nextCursor: null };
       }
+      // Search costs 100 quota units per page, so one page per run; an
+      // unfinished window resumes via publishedBefore instead of skipping
+      // the remainder (audit #4).
+      const meta = ctx.cursorMeta as { pending_until?: string | null };
       const params: Record<string, string> = {
         part: "snippet",
         q: target.value,
         type: "video",
         order: "date",
         maxResults: "50",
+        publishedAfter: cursor,
       };
-      if (cursor) params.publishedAfter = cursor;
-      const data = (await apiGet(creds, "/search", params)) as { items?: YtVideoItem[] };
+      if (meta.pending_until) params.publishedBefore = meta.pending_until;
+      const data = (await apiGet(creds, "/search", params)) as {
+        items?: YtVideoItem[];
+        nextPageToken?: string;
+      };
       rawItems = data.items ?? [];
+      completed = !data.nextPageToken || rawItems.length === 0;
+
+      const parsedSearch = rawItems
+        .map((v) => parseVideo(monitor.id, stream.stream, v))
+        .filter((i): i is RawItem => i !== null);
+      const oldest = parsedSearch.reduce(
+        (m, i) => Math.min(m, i.postedAt.getTime()),
+        Number.MAX_SAFE_INTEGER,
+      );
+      if (!completed) {
+        if (!(await hasEventToday(sql, monitor.id, "coverage_gap"))) {
+          await logEvent(sql, {
+            monitorId: monitor.id,
+            source: "youtube",
+            stream: stream.stream,
+            level: "warn",
+            kind: "coverage_gap",
+            message: "more search results than one page; the remainder resumes next run",
+          });
+        }
+        return {
+          items: parsedSearch,
+          nextCursor: null,
+          cursorMeta: {
+            pending_until:
+              oldest === Number.MAX_SAFE_INTEGER
+                ? (meta.pending_until ?? null)
+                : new Date(oldest).toISOString(),
+          },
+          droppedCount: rawItems.length - parsedSearch.length,
+        };
+      }
+      return {
+        items: parsedSearch,
+        nextCursor: nextCursorFrom(parsedSearch, cursor),
+        cursorMeta: { pending_until: null },
+        droppedCount: rawItems.length - parsedSearch.length,
+      };
     }
 
     const parsed = rawItems.map((v) => parseVideo(monitor.id, stream.stream, v)).filter((i): i is RawItem => i !== null);
     const items = newerThan(parsed, cursor);
-    return { items, nextCursor: nextCursorFrom(items, cursor), droppedCount: rawItems.length - parsed.length };
+    if (!completed && !(await hasEventToday(sql, monitor.id, "coverage_gap"))) {
+      await logEvent(sql, {
+        monitorId: monitor.id,
+        source: "youtube",
+        stream: stream.stream,
+        level: "warn",
+        kind: "coverage_gap",
+        message: `uploads listing still had pages after the page cap; cursor held`,
+      });
+    }
+    return {
+      items,
+      nextCursor: completed ? nextCursorFrom(items, cursor) : null,
+      droppedCount: rawItems.length - parsed.length,
+    };
   },
 
   async refreshMetrics(sql: Db, monitor: MonitorRow, refs: ItemRef[]): Promise<MetricsRow[]> {
