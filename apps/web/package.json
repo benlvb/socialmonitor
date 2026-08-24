@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "latest",
     "@socialmonitor/db": "workspace:*",
     "@socialmonitor/pipeline": "workspace:*",
     "@socialmonitor/shared": "workspace:*",

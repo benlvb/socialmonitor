@@ -48,6 +48,8 @@ export default async function MonitorsPage() {
               <p className="muted" style={{ marginBottom: 0 }}>
                 <Link href={`/monitors/${m.id}`}>dashboard</Link>
                 {" · "}
+                <Link href={`/monitors/${m.id}/ask`}>ask</Link>
+                {" · "}
                 <Link href={`/monitors/${m.id}/items`}>items</Link>
                 {" · "}
                 <Link href={`/monitors/${m.id}/summaries`}>summaries</Link>

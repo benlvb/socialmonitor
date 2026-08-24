@@ -23,6 +23,7 @@ import {
 } from "./db/repos";
 import { logEvent } from "./events";
 import { withStreamLock } from "./queue";
+import { runWeeklySummary } from "./summary";
 
 /** Entry point for one queued job — expands (monitor, source, kind) to streams. */
 export async function runJob(sql: Db, job: JobPayload): Promise<void> {
@@ -30,13 +31,9 @@ export async function runJob(sql: Db, job: JobPayload): Promise<void> {
   if (!monitor || monitor.status !== "active") return;
 
   if (job.kind === "weekly_summary") {
-    // P4 — logged so the dispatch trail is visible in pipeline_events.
-    await logEvent(sql, {
-      monitorId: monitor.id,
-      level: "info",
-      kind: "weekly_summary_skipped",
-      message: "weekly summary not implemented yet (P4)",
-    });
+    await withStreamLock(sql, `${monitor.id}:_system`, "weekly_summary", () =>
+      runWeeklySummary(sql, monitor),
+    );
     return;
   }
 

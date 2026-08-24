@@ -10,6 +10,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@anthropic-ai/sdk':
+        specifier: latest
+        version: 0.120.0(zod@4.4.3)
       '@socialmonitor/db':
         specifier: workspace:*
         version: link:../../packages/db

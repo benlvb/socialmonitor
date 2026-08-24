@@ -87,6 +87,7 @@ export default async function MonitorDashboard({ params }: { params: Promise<{ i
         <h1>{monitor.name}</h1>
         <span className={`pill ${monitor.status === "active" ? "ok" : "idle"}`}>{monitor.status}</span>
         <div className="spacer" />
+        <Link className="btn" href={`/monitors/${id}/ask`}>Ask</Link>
         <Link className="btn" href={`/monitors/${id}/items`}>Items</Link>
         <Link className="btn" href={`/monitors/${id}/summaries`}>Summaries</Link>
         <Link className="btn" href={`/monitors/${id}/settings`}>Settings</Link>

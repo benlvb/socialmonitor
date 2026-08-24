@@ -1,0 +1,9 @@
+# Railway worker service (D21). Connect the GitHub repo; this file makes the
+# service build the pipeline worker from the monorepo root.
+[build]
+builder = "dockerfile"
+dockerfilePath = "packages/pipeline/Dockerfile"
+
+[deploy]
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
