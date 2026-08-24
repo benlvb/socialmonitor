@@ -73,16 +73,19 @@ export async function markStreamSuccess(
   stream: string,
   cursor: string | null,
   rowsAdded: number,
+  meta?: Record<string, unknown>,
 ): Promise<void> {
+  const metaJson = meta === undefined ? null : JSON.stringify(meta);
   await sql`
     insert into sync_streams
       (monitor_id, source, stream, cursor, cursor_meta, rows_total,
        consecutive_failures, breaker_tripped_at, last_run_at, last_success_at, updated_at)
     values
-      (${monitorId}, ${source}, ${stream}, ${cursor}, ${sql.json({})}, ${rowsAdded},
+      (${monitorId}, ${source}, ${stream}, ${cursor}, ${metaJson ?? "{}"}::jsonb, ${rowsAdded},
        0, null, now(), now(), now())
     on conflict (monitor_id, source, stream) do update set
       cursor = coalesce(${cursor}, sync_streams.cursor),
+      cursor_meta = coalesce(${metaJson}::jsonb, sync_streams.cursor_meta),
       rows_total = sync_streams.rows_total + ${rowsAdded},
       consecutive_failures = 0,
       breaker_tripped_at = null,

@@ -50,7 +50,22 @@ export async function saveCredentials(
     const existing = await sql`
       select id, vault_secret_id from source_credentials
       where owner_id = ${user.id} and source = ${integration} and label = 'default'`;
-    const payload = JSON.stringify(secret);
+    // Merge over the existing secret — "(unchanged if left blank)" must be
+    // true, not a wipe of the omitted fields (audit #8).
+    let merged: Record<string, string> = secret;
+    if (existing[0]?.vault_secret_id) {
+      try {
+        const prior = await sql`
+          select decrypted_secret from vault.decrypted_secrets
+          where id = ${existing[0].vault_secret_id}`;
+        if (prior[0]?.decrypted_secret) {
+          merged = { ...(JSON.parse(prior[0].decrypted_secret as string) as Record<string, string>), ...secret };
+        }
+      } catch {
+        // unreadable prior secret: fall through with the submitted fields only
+      }
+    }
+    const payload = JSON.stringify(merged);
     if (existing[0]?.vault_secret_id) {
       await sql`select vault.update_secret(${existing[0].vault_secret_id}, ${payload})`;
       await sql`

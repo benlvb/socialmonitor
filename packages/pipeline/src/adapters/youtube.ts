@@ -1,4 +1,4 @@
-import { TransientError, errorFromStatus, type ItemRef, type MetricsRow, type RawItem } from "@socialmonitor/shared";
+import { SystemicError, TransientError, errorFromStatus, type ItemRef, type MetricsRow, type RawItem } from "@socialmonitor/shared";
 import type { Db } from "@socialmonitor/db";
 import type { MonitorRow, TargetRow } from "../db/repos";
 import type { FetchContext, FetchResult, SourceAdapter, StreamDef } from "./types";
@@ -52,6 +52,7 @@ function parseVideo(monitorId: string, stream: string, item: YtVideoItem): RawIt
   const id = videoId(item);
   const s = item.snippet;
   if (!id || !s?.publishedAt) return null;
+  if (Number.isNaN(new Date(s.publishedAt).getTime())) return null;
   const content = [s.title, s.description].filter(Boolean).join("\n\n");
   if (!content) return null;
   return {
@@ -95,6 +96,7 @@ function parseComment(monitorId: string, thread: YtCommentThread, parentText: st
   const c = thread.snippet?.topLevelComment?.snippet;
   const vid = thread.snippet?.videoId;
   if (!thread.id || !c?.publishedAt || !vid) return null;
+  if (Number.isNaN(new Date(c.publishedAt).getTime())) return null;
   const text = c.textOriginal ?? c.textDisplay ?? "";
   if (!text) return null;
   return {
@@ -191,6 +193,12 @@ export const youtubeAdapter: SourceAdapter = {
     if (!creds) return { items: [], nextCursor: null };
 
     if (stream.stream === "comments") return fetchComments(ctx, creds);
+
+    // Forward-only first sync (audit #16): without this, activation ingests
+    // years of channel history and burns the classify budget on stale content.
+    if (!cursor) {
+      return { items: [], nextCursor: new Date().toISOString() };
+    }
 
     const target = stream.target!;
     let rawItems: YtVideoItem[] = [];
@@ -291,9 +299,13 @@ async function fetchComments(ctx: FetchContext, creds: Credentials): Promise<Fet
         textFormat: "plainText",
       })) as { items?: YtCommentThread[] };
     } catch (err) {
-      // Comments disabled on a video is per-item, not systemic.
-      dropped++;
-      continue;
+      // Only comments-disabled is per-item; quota/auth errors must escape to
+      // the breaker instead of reporting a dead source as green (audit #4b).
+      if (err instanceof SystemicError && /commentsDisabled|disabled comments/i.test(err.message)) {
+        dropped++;
+        continue;
+      }
+      throw err;
     }
     for (const t of data.items ?? []) {
       const item = parseComment(monitor.id, t, parentText);
@@ -301,6 +313,7 @@ async function fetchComments(ctx: FetchContext, creds: Credentials): Promise<Fet
       else dropped++;
     }
   }
-  const fresh = newerThan(items, cursor);
-  return { items: fresh, nextCursor: nextCursorFrom(fresh, cursor), droppedCount: dropped };
+  // No cursor filter: newly discovered videos carry pre-existing comments that a
+  // global time cursor would silently drop (audit #11). Inserts are idempotent.
+  return { items, nextCursor: null, droppedCount: dropped };
 }

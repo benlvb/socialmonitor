@@ -46,22 +46,75 @@ const BATCH_LIMIT = 50;
  * stream meta; tick N+1 collects it, writes results, and submits the next.
  * The hard budget cap pauses THIS path only — fetch never stops.
  */
+interface ClassifyMeta {
+  batch_id?: string;
+  item_count?: number;
+  model?: string;
+  submitted_at?: string;
+  /** failed classification attempts per external_id (retry once, then drop — SPEC §6) */
+  attempts?: Record<string, number>;
+}
+
 export async function runClassify(sql: Db, monitor: MonitorRow, source: Source): Promise<void> {
   const state = await getStreamState(sql, monitor.id, source, CLASSIFY_STREAM);
-  const meta = (state?.cursor_meta ?? {}) as { batch_id?: string; item_count?: number };
+  const meta = (state?.cursor_meta ?? {}) as ClassifyMeta;
+  let attempts: Record<string, number> = { ...(meta.attempts ?? {}) };
 
   const client = createAnthropic();
   const fixtureMode = process.env.FIXTURE_MODE === "1";
 
   // Phase A: collect a pending batch if one exists.
   if (meta.batch_id && client) {
-    const status = await getBatchStatus(client, meta.batch_id);
-    if (status !== "ended") {
-      console.log(`[classify] ${monitor.name}/${source}: batch ${meta.batch_id} still processing`);
-      return;
+    let failedIds: string[] = [];
+    try {
+      const status = await getBatchStatus(client, meta.batch_id);
+      if (status !== "ended") {
+        console.log(`[classify] ${monitor.name}/${source}: batch ${meta.batch_id} still processing`);
+        return;
+      }
+      failedIds = await collectAndWrite(sql, monitor, source, client, meta.batch_id);
+    } catch (err) {
+      // Expired/404 batch (e.g. worker down > 29 days) must not wedge the
+      // stream forever (audit #23): clear it, log, and resubmit fresh.
+      await logEvent(sql, {
+        monitorId: monitor.id,
+        source,
+        stream: CLASSIFY_STREAM,
+        level: "warn",
+        kind: "batch_lost",
+        message: `pending batch ${meta.batch_id} unrecoverable (${String(err).slice(0, 200)}); resubmitting`,
+      });
     }
-    await collectAndWrite(sql, monitor, source, client, meta.batch_id);
-    await updateStreamMeta(sql, monitor.id, source, CLASSIFY_STREAM, {});
+    // Retry-then-drop (audit #9): second failure writes an unclassifiable row
+    // so the anti-join releases the item instead of blocking the queue head.
+    for (const id of failedIds) {
+      const n = (attempts[id] ?? 0) + 1;
+      if (n >= 2) {
+        delete attempts[id];
+        await insertClassification(sql, {
+          monitorId: monitor.id,
+          source,
+          externalId: id,
+          relevant: false,
+          signalType: "noise",
+          sentiment: "neutral",
+          tags: [],
+          score: null,
+          description: "",
+          matchedExisting: false,
+          reasoning: "dropped after 2 failed classification attempts",
+          model: "unclassifiable",
+          promptVersion: PROMPT_VERSION,
+        });
+      } else {
+        attempts[id] = n;
+      }
+    }
+    // Successful ids no longer need attempt counters.
+    for (const id of Object.keys(attempts)) {
+      if (!failedIds.includes(id)) delete attempts[id];
+    }
+    await updateStreamMeta(sql, monitor.id, source, CLASSIFY_STREAM, { attempts });
   }
 
   // Phase B: budget gates.
@@ -154,6 +207,7 @@ export async function runClassify(sql: Db, monitor: MonitorRow, source: Source):
     item_count: requests.length,
     model,
     submitted_at: new Date().toISOString(),
+    attempts,
   });
   console.log(
     `[classify] ${monitor.name}/${source}: submitted batch ${batchId} (${requests.length} items)`,
@@ -166,7 +220,7 @@ async function collectAndWrite(
   source: Source,
   client: NonNullable<ReturnType<typeof createAnthropic>>,
   batchId: string,
-): Promise<void> {
+): Promise<string[]> {
   const state = await getStreamState(sql, monitor.id, source, CLASSIFY_STREAM);
   const meta = (state?.cursor_meta ?? {}) as { model?: string };
   const model = meta.model || monitor.config.model.classify || DEFAULT_CLASSIFY_MODEL;
@@ -178,6 +232,7 @@ async function collectAndWrite(
   let inTok = 0;
   let outTok = 0;
   let cost = 0;
+  const failedIds: string[] = [];
   const validator = classificationOutputSchema(monitor.config);
 
   for (const [externalId, r] of results) {
@@ -188,9 +243,15 @@ async function collectAndWrite(
       outTok += r.usage.output_tokens;
       cost += estimateCostUsd(model, r.usage, true);
     }
-    if (r.error || r.json == null) continue;
+    if (r.error || r.json == null) {
+      failedIds.push(externalId);
+      continue;
+    }
     const parsed = validator.safeParse(r.json);
-    if (!parsed.success) continue;
+    if (!parsed.success) {
+      failedIds.push(externalId);
+      continue;
+    }
     await writeClassification(sql, monitor, source, externalId, parsed.data, model);
     succeeded++;
   }
@@ -200,19 +261,23 @@ async function collectAndWrite(
   // Mass-failure guard (SPEC section 9): a run that classified zero items is
   // broken, not successful.
   if (processed > 0 && succeeded === 0) {
-    await logEvent(sql, {
-      monitorId: monitor.id,
-      source,
-      stream: CLASSIFY_STREAM,
-      level: "error",
-      kind: "mass_failure",
-      message: `Batch ${batchId}: ${processed} items processed, 0 classified successfully`,
-    });
-    return;
+    // Debounced (audit #22): once per day, not once per 30-min tick.
+    if (!(await hasEventToday(sql, monitor.id, "mass_failure"))) {
+      await logEvent(sql, {
+        monitorId: monitor.id,
+        source,
+        stream: CLASSIFY_STREAM,
+        level: "error",
+        kind: "mass_failure",
+        message: `Batch ${batchId}: ${processed} items processed, 0 classified successfully`,
+      });
+    }
+    return failedIds;
   }
 
   await markStreamSuccess(sql, monitor.id, source, CLASSIFY_STREAM, null, succeeded);
   console.log(`[classify] ${monitor.name}/${source}: batch ${batchId} → ${succeeded}/${processed} classified ($${cost.toFixed(4)})`);
+  return failedIds;
 }
 
 async function writeClassification(

@@ -18,6 +18,8 @@ export interface FetchContext {
   monitor: MonitorRow;
   stream: StreamDef;
   cursor: string | null;
+  /** Persisted per-stream metadata (e.g. per-channel cursor maps). */
+  cursorMeta: Record<string, unknown>;
 }
 
 export interface FetchResult {
@@ -26,6 +28,8 @@ export interface FetchResult {
   nextCursor: string | null;
   /** per-item parse failures dropped inside the adapter (logged, cursor may advance) */
   droppedCount?: number;
+  /** When set, replaces the stream's cursor_meta on success (per-channel cursors etc.). */
+  cursorMeta?: Record<string, unknown>;
 }
 
 /**

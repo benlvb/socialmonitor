@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { validateMonitorConfig } from "@socialmonitor/shared";
+import { createDb } from "@socialmonitor/db";
 import { requireUser } from "../../../lib/supabase/server";
 import { templateConfig } from "../../../lib/monitor-templates";
 
@@ -73,9 +74,10 @@ export async function updateMonitor(
     .eq("id", monitorId);
   if (error) return { error: error.message };
 
-  // Replace targets (RLS guarantees ownership).
-  const { error: delError } = await supabase.from("targets").delete().eq("monitor_id", monitorId);
-  if (delError) return { error: delError.message };
+  // Replace targets: deduped and TRANSACTIONAL — the old delete-then-insert
+  // wiped every target when the insert hit the unique constraint (audit #12).
+  // Ownership was verified by the RLS-scoped monitor update above.
+  const seen = new Set<string>();
   const rows = targets
     .filter((t) => t.value.trim())
     .map((t) => ({
@@ -84,11 +86,27 @@ export async function updateMonitor(
       kind: t.kind,
       value: t.value.trim(),
       enabled: t.enabled,
-      config: {},
-    }));
-  if (rows.length > 0) {
-    const { error: insError } = await supabase.from("targets").insert(rows);
-    if (insError) return { error: insError.message };
+      config: "{}",
+    }))
+    .filter((t) => {
+      const key = `${t.source}:${t.kind}:${t.value}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  const sqlDb = createDb();
+  if (!sqlDb) return { error: "DATABASE_URL not configured on the web app." };
+  try {
+    await sqlDb.begin(async (tx) => {
+      await tx`delete from targets where monitor_id = ${monitorId}`;
+      if (rows.length > 0) {
+        await tx`insert into targets ${tx(rows)}`;
+      }
+    });
+  } catch (err) {
+    return { error: `Saving targets failed (nothing was changed): ${String(err)}` };
+  } finally {
+    await sqlDb.end({ timeout: 3 });
   }
 
   revalidatePath(`/monitors/${monitorId}/settings`);

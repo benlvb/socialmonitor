@@ -28,7 +28,7 @@ afterAll(() => {
 
 describe("x adapter (fixtures)", () => {
   it("parses tweets into the RawItem contract", async () => {
-    const r = await xAdapter.fetch({ sql, monitor, stream: { stream: "search/t1" }, cursor: null });
+    const r = await xAdapter.fetch({ sql, monitor, stream: { stream: "search/t1" }, cursor: null, cursorMeta: {} });
     expect(r.items.length).toBe(6);
     const first = r.items[0]!;
     expect(first.source).toBe("x");
@@ -42,7 +42,7 @@ describe("x adapter (fixtures)", () => {
     expect(Number.isNaN(first.postedAt.getTime())).toBe(false);
   });
   it("second run with a cursor is quiet", async () => {
-    const r = await xAdapter.fetch({ sql, monitor, stream: { stream: "search/t1" }, cursor: "999" });
+    const r = await xAdapter.fetch({ sql, monitor, stream: { stream: "search/t1" }, cursor: "999", cursorMeta: {} });
     expect(r.items).toEqual([]);
   });
   it("reports configured in fixture mode", async () => {
@@ -52,7 +52,7 @@ describe("x adapter (fixtures)", () => {
 
 describe("reddit adapter (fixtures)", () => {
   it("parses posts and comments, no impressions (labeled proxy source)", async () => {
-    const r = await redditAdapter.fetch({ sql, monitor, stream: { stream: "subreddit/t1" }, cursor: null });
+    const r = await redditAdapter.fetch({ sql, monitor, stream: { stream: "subreddit/t1" }, cursor: null, cursorMeta: {} });
     expect(r.items.length).toBe(3);
     const post = r.items.find((i) => i.externalId === "t3_1mxk2ab")!;
     expect(post.content).toContain("silently drops");
@@ -66,14 +66,14 @@ describe("reddit adapter (fixtures)", () => {
 
 describe("youtube adapter (fixtures)", () => {
   it("parses videos (title + description as content)", async () => {
-    const r = await youtubeAdapter.fetch({ sql, monitor, stream: { stream: "channel/t1" }, cursor: null });
+    const r = await youtubeAdapter.fetch({ sql, monitor, stream: { stream: "channel/t1" }, cursor: null, cursorMeta: {} });
     expect(r.items.length).toBe(2);
     expect(r.items[0]!.externalId).toBe("video:aBcD1234xyz");
     expect(r.items[0]!.content).toContain("honest review");
     expect(r.items[0]!.content).toContain("pricing jumped 40%");
   });
   it("parses comment threads with parent linkage", async () => {
-    const r = await youtubeAdapter.fetch({ sql, monitor, stream: { stream: "comments" }, cursor: null });
+    const r = await youtubeAdapter.fetch({ sql, monitor, stream: { stream: "comments" }, cursor: null, cursorMeta: {} });
     expect(r.items.length).toBe(2);
     expect(r.items[0]!.parentExternalId).toBe("video:aBcD1234xyz");
     expect(r.items[0]!.engagement).toBe(41);
@@ -82,7 +82,7 @@ describe("youtube adapter (fixtures)", () => {
 
 describe("telegram adapter (fixtures)", () => {
   it("parses channel posts with views as impressions", async () => {
-    const r = await telegramAdapter.fetch({ sql, monitor, stream: { stream: "channel/t1" }, cursor: null });
+    const r = await telegramAdapter.fetch({ sql, monitor, stream: { stream: "channel/t1" }, cursor: null, cursorMeta: {} });
     expect(r.items.length).toBe(2);
     expect(r.items[0]!.externalId).toBe("acmewidgetchat:4501");
     expect(r.items[0]!.impressions).toBe(1800);
@@ -96,11 +96,15 @@ describe("discord adapter", () => {
     expect(snowflakeToDatetime(datetimeToSnowflake(d)).getTime()).toBe(d.getTime());
   });
   it("parses fixture messages, skips empty content", async () => {
-    const r = await discordAdapter.fetch({ sql, monitor, stream: { stream: "guild/t1" }, cursor: null });
+    const r = await discordAdapter.fetch({ sql, monitor, stream: { stream: "guild/t1" }, cursor: null, cursorMeta: {} });
     expect(r.items.length).toBe(3);
     const reply = r.items.find((i) => i.externalId === "1408100000000000002")!;
     expect(reply.parentExternalId).toBe("1408100000000000001");
     expect(reply.context.channel_name).toBe("support");
     expect(r.items[0]!.impressions).toBeNull();
+    // Per-channel cursors (audit #3): highest snowflake per channel
+    const channels = (r.cursorMeta as { channels: Record<string, string> }).channels;
+    expect(channels["990001"]).toBe("1408100000000000002");
+    expect(channels["990002"]).toBe("1408100000000000003");
   });
 });

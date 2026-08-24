@@ -144,6 +144,11 @@ export const xAdapter: SourceAdapter = {
     const creds = await resolveCredentials(sql, monitor.owner_id, "x_scraper");
     if (!creds) return { items: [], nextCursor: null };
 
+    // Forward-only first sync (audit #16): backfill is a deliberate action.
+    if (!cursor) {
+      return { items: [], nextCursor: String(Math.floor(Date.now() / 1000)) };
+    }
+
     // Per-monitor read budget (D13): fetched items today vs x_reads_per_day.
     const used = await readsToday(sql, monitor.id);
     const budget = monitor.config.budgets.x_reads_per_day;

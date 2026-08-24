@@ -113,11 +113,30 @@ export const telegramAdapter: SourceAdapter = {
     const username = stream.target!.value.replace(/^@/, "");
 
     const client = await getClient(creds);
+
+    // Forward-only first sync (audit #16): record the newest id, fetch nothing.
+    if (!cursor) {
+      try {
+        const newest = await client.getMessages(username, { limit: 1 });
+        const newestId = Number(newest?.[0]?.id ?? 0);
+        return { items: [], nextCursor: newestId > 0 ? String(newestId) : null };
+      } catch (err) {
+        const msg = String(err);
+        if (/USERNAME_NOT_OCCUPIED|CHANNEL_PRIVATE|USERNAME_INVALID/.test(msg)) {
+          throw new SystemicError(`telegram channel unavailable: ${username}: ${msg}`);
+        }
+        throw new TransientError(`telegram first-sync probe failed: ${msg}`);
+      }
+    }
+
     let messages: any[];
     try {
+      // reverse: true iterates ASCENDING from minId — without it GramJS returns
+      // the NEWEST N and a busy channel silently loses the middle (audit #10).
       messages = await client.getMessages(username, {
-        minId: cursor ? Number(cursor) : 0,
-        limit: cursor ? 100 : 25, // forward-leaning first sync: small first page
+        minId: Number(cursor),
+        reverse: true,
+        limit: 300,
       });
     } catch (err) {
       const msg = String(err);
@@ -132,7 +151,7 @@ export const telegramAdapter: SourceAdapter = {
 
     const items: RawItem[] = [];
     let dropped = 0;
-    let maxId = cursor ? Number(cursor) : 0;
+    let maxId = Number(cursor);
     for (const m of messages) {
       const id = Number(m?.id ?? 0);
       if (id > maxId) maxId = id;

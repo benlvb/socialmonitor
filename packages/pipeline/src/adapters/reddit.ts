@@ -174,12 +174,19 @@ export const redditAdapter: SourceAdapter = {
     const creds = await resolveCredentials(sql, monitor.owner_id, "reddit");
     if (!creds) return { items: [], nextCursor: null };
 
+    if (stream.stream === "comments") {
+      return fetchComments(ctx, creds);
+    }
+
+    // Forward-only first sync (audit #16): backfill is a deliberate action.
+    if (!cursor) {
+      return { items: [], nextCursor: String(Math.floor(Date.now() / 1000)) };
+    }
+
     const target = stream.target;
     let raw: RedditThing[] = [];
 
-    if (stream.stream === "comments") {
-      return fetchComments(ctx, creds);
-    } else if (target?.kind === "subreddit") {
+    if (target?.kind === "subreddit") {
       const data = (await apiGet(creds, `/r/${target.value}/new`, { limit: "100" })) as { data?: { children?: RedditThing[] } };
       raw = data.data?.children ?? [];
     } else if (target?.kind === "keyword") {
@@ -229,6 +236,7 @@ async function fetchComments(ctx: FetchContext, creds: Credentials): Promise<Fet
       else dropped++;
     }
   }
-  const fresh = newerThan(items, cursor);
-  return { items: fresh, nextCursor: nextCursorFrom(fresh, cursor), droppedCount: dropped };
+  // No cursor filter: fresh posts carry comments older than a global time
+  // cursor, which would silently drop them (audit #11). Inserts are idempotent.
+  return { items, nextCursor: null, droppedCount: dropped };
 }

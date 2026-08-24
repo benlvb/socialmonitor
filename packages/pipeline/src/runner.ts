@@ -97,7 +97,13 @@ async function runFetchStream(
   if (state?.breaker_tripped_at) return; // operator resets via UI
 
   try {
-    const result = await adapter.fetch({ sql, monitor, stream, cursor: state?.cursor ?? null });
+    const result = await adapter.fetch({
+      sql,
+      monitor,
+      stream,
+      cursor: state?.cursor ?? null,
+      cursorMeta: (state?.cursor_meta as Record<string, unknown>) ?? {},
+    });
     const stored = await insertRawItems(sql, result.items);
     await markStreamSuccess(
       sql,
@@ -106,6 +112,7 @@ async function runFetchStream(
       stream.stream,
       result.nextCursor,
       stored,
+      result.cursorMeta,
     );
     if (result.droppedCount) {
       await logEvent(sql, {
