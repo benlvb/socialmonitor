@@ -35,10 +35,10 @@ import {
 } from "./anthropic";
 import { buildClassifyPrompt, PROMPT_VERSION } from "./prompt";
 import { prefilterReason } from "./prefilter";
+import { GLOBAL_CAP_USD } from "./anthropic";
 
 const CLASSIFY_STREAM = "classify";
 const BATCH_LIMIT = 50;
-const GLOBAL_CAP_USD = Number(process.env.GLOBAL_MONTHLY_LLM_CAP_USD ?? 50);
 
 /**
  * Classify job for one (monitor, source) — SPEC section 6, D13, D14.

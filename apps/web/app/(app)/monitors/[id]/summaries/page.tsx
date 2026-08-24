@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { marked } from "marked";
+import DOMPurify from "isomorphic-dompurify";
 import { requireUser } from "../../../../../lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -69,8 +70,10 @@ export default async function SummariesPage({
                   <p className="error-text">⚠ this summary hit the token limit and may end mid-sentence</p>
                 )}
                 <article
-                  // Own-data markdown from our own Sonnet cron — not user-supplied HTML.
-                  dangerouslySetInnerHTML={{ __html: marked.parse(selected.markdown) as string }}
+                  // Summaries quote scraped social content — sanitize before injecting.
+                  dangerouslySetInnerHTML={{
+                    __html: DOMPurify.sanitize(marked.parse(selected.markdown) as string),
+                  }}
                 />
               </>
             ) : (

@@ -14,6 +14,9 @@ export const DEFAULT_CLASSIFY_MODEL = process.env.CLASSIFY_MODEL || "claude-haik
 export const DEFAULT_NARRATE_MODEL = process.env.NARRATE_MODEL || "claude-sonnet-5";
 
 /** $ per 1M tokens (input, output) at standard price; batch is half. */
+/** Hard monthly ceiling (D13): pauses all discretionary LLM spend, never fetching. */
+export const GLOBAL_CAP_USD = Number(process.env.GLOBAL_MONTHLY_LLM_CAP_USD ?? 50);
+
 const MODEL_PRICES: Record<string, { in: number; out: number }> = {
   "claude-haiku-4-5": { in: 1, out: 5 },
   "claude-sonnet-5": { in: 3, out: 15 },

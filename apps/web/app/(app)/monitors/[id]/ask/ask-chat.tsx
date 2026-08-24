@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import { marked } from "marked";
+import DOMPurify from "isomorphic-dompurify";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -9,14 +10,22 @@ interface ChatMessage {
   toolCalls?: { name: string; args: Record<string, unknown>; result?: unknown }[];
 }
 
+/** Model output can echo attacker-controlled scraped content — always sanitize. */
+function renderMarkdown(md: string): { __html: string } {
+  return { __html: DOMPurify.sanitize(marked.parse(md) as string) };
+}
+
 export function AskChat({ monitorId }: { monitorId: string }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [pending, setPending] = useState(false);
-  const [approval, setApproval] = useState<{ name: string; args: unknown }[] | null>(null);
+  const [approval, setApproval] = useState<{
+    calls: { name: string; args: unknown }[];
+    pendingTurn: unknown[];
+  } | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
 
-  async function send(history: ChatMessage[], approveTools = false) {
+  async function send(history: ChatMessage[], approvedTurn?: unknown[]) {
     setPending(true);
     setApproval(null);
     try {
@@ -25,25 +34,27 @@ export function AskChat({ monitorId }: { monitorId: string }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           monitorId,
-          approveTools,
+          approveTools: Boolean(approvedTurn),
+          pendingTurn: approvedTurn,
           messages: history.map((m) => ({ role: m.role, content: m.content })),
         }),
       });
-      const data = (await res.json()) as {
+      const data = (await res.json().catch(() => ({ error: `request failed (${res.status})` }))) as {
         reply?: string;
         error?: string;
         toolCalls?: ChatMessage["toolCalls"];
         needsApproval?: { name: string; args: unknown }[];
+        pendingTurn?: unknown[];
       };
-      if (data.needsApproval) {
-        setApproval(data.needsApproval);
+      if (data.needsApproval && data.pendingTurn) {
+        setApproval({ calls: data.needsApproval, pendingTurn: data.pendingTurn });
         return;
       }
       setMessages([
         ...history,
         {
           role: "assistant",
-          content: data.reply ?? data.error ?? "(error)",
+          content: data.reply || data.error || "(no answer)",
           toolCalls: data.toolCalls,
         },
       ]);
@@ -91,7 +102,7 @@ export function AskChat({ monitorId }: { monitorId: string }) {
               </div>
             )}
             {m.role === "assistant" ? (
-              <div dangerouslySetInnerHTML={{ __html: marked.parse(m.content) as string }} />
+              <div dangerouslySetInnerHTML={renderMarkdown(m.content)} />
             ) : (
               <div>{m.content}</div>
             )}
@@ -102,14 +113,14 @@ export function AskChat({ monitorId }: { monitorId: string }) {
           <div className="card">
             <p>
               The analyst wants to run:{" "}
-              {approval.map((a) => (
-                <code key={a.name} className="mono">
+              {approval.calls.map((a, i) => (
+                <code key={i} className="mono">
                   {a.name}({JSON.stringify(a.args)}){" "}
                 </code>
               ))}
             </p>
             <div className="row">
-              <button className="primary" onClick={() => void send(messages, true)}>
+              <button className="primary" onClick={() => void send(messages, approval.pendingTurn)}>
                 Approve &amp; continue
               </button>
               <button onClick={() => setApproval(null)}>Cancel</button>

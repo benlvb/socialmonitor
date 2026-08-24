@@ -13,10 +13,12 @@
     "@socialmonitor/db": "workspace:*",
     "@socialmonitor/pipeline": "workspace:*",
     "@socialmonitor/shared": "workspace:*",
+    "isomorphic-dompurify": "latest",
     "marked": "latest",
     "@supabase/ssr": "latest",
     "@supabase/supabase-js": "latest",
     "recharts": "latest",
+    "zod": "^4.0.0",
     "next": "^16.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

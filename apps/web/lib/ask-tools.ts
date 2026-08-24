@@ -1,8 +1,11 @@
 import type { Db } from "@socialmonitor/db";
+import { defangPromptMarkers } from "@socialmonitor/shared";
 
 /**
  * /ask tool layer (D17): thin parameterized queries. The model never sees SQL.
  * Integers clamped, strings bound, row/char caps. All read-only.
+ * Theme counters are LIFETIME cumulative (mergeTheme only grows them) — they
+ * are labeled as such; weekly windows come from item-level aggregates.
  */
 
 const clamp = (v: unknown, def: number, lo: number, hi: number): number => {
@@ -22,7 +25,8 @@ export interface AskToolDef {
 export const ASK_TOOLS: AskToolDef[] = [
   {
     name: "monitor_pulse",
-    description: "One-shot overview: volume by signal type, sentiment mix, and top themes for the period.",
+    description:
+      "One-shot overview: volume by signal type and sentiment mix for the window, plus top themes active in the window (theme author/item counters are lifetime totals, labeled).",
     input_schema: {
       type: "object",
       properties: { days: { type: "integer", description: "lookback window, 1-365 (default 30)" } },
@@ -31,7 +35,8 @@ export const ASK_TOOLS: AskToolDef[] = [
   },
   {
     name: "top_themes",
-    description: "Top deduped themes ranked by unique authors. Optionally filter by signal_type or source.",
+    description:
+      "Top deduped themes last active in the window, ranked by lifetime unique authors (counters are lifetime totals, labeled). Optionally filter by signal_type or source.",
     input_schema: {
       type: "object",
       properties: {
@@ -91,12 +96,19 @@ export async function runAskTool(
           where c.monitor_id = ${monitorId} and c.relevant and r.posted_at >= now() - make_interval(days => ${days})
           group by 1`,
         sql`
-          select source, signal_type, description, author_count, item_count, score_avg
+          select source, signal_type, description,
+                 author_count as lifetime_author_count,
+                 item_count as lifetime_item_count, score_avg
           from themes where monitor_id = ${monitorId}
-            and last_seen >= (current_date - ${days})
+            and last_seen >= (now() - make_interval(days => ${days}))::date
           order by author_count desc limit 12`,
       ]);
-      return { days, volume_by_signal_type: byType, sentiment_mix: sentiment, top_themes: themes };
+      return {
+        days,
+        volume_by_signal_type: byType,
+        sentiment_mix: sentiment,
+        top_themes_active_in_window: themes,
+      };
     }
     case "top_themes": {
       const days = clamp(args.days, 30, 1, 365);
@@ -104,11 +116,13 @@ export async function runAskTool(
       const signalType = typeof args.signal_type === "string" ? args.signal_type : null;
       const source = typeof args.source === "string" ? args.source : null;
       return sql`
-        select source, signal_type, description, tags, author_count, item_count, score_avg,
+        select source, signal_type, description, tags,
+               author_count as lifetime_author_count,
+               item_count as lifetime_item_count, score_avg,
                first_seen, last_seen, item_refs -> 0 ->> 'url' as sample_url
         from themes
         where monitor_id = ${monitorId}
-          and last_seen >= (current_date - ${days})
+          and last_seen >= (now() - make_interval(days => ${days}))::date
           and (${signalType}::text is null or signal_type = ${signalType})
           and (${source}::text is null or source = ${source})
         order by author_count desc limit ${limit}`;
@@ -136,7 +150,8 @@ export async function runAskTool(
           and (${source}::text is null or c.source = ${source})
         order by coalesce(r.impressions, r.engagement, 0) desc
         limit ${limit}`;
-      return rows;
+      // Defang scraped text before it re-enters a prompt as tool_result data.
+      return rows.map((r) => ({ ...r, content: defangPromptMarkers(r.content as string) }));
     }
     default:
       return { error: `unknown tool: ${name}` };
@@ -151,5 +166,10 @@ export async function buildDigest(sql: Db, monitorId: string): Promise<unknown> 
     runAskTool(sql, monitorId, "top_themes", { signal_type: "feature_request", days: 30, limit: 10 }),
     runAskTool(sql, monitorId, "volume_trend", { days: 14 }),
   ]);
-  return { pulse_30d: pulse, top_complaints_30d: complaints, top_feature_requests_30d: requests, volume_trend_14d: trend };
+  return {
+    pulse_30d: pulse,
+    top_complaints_30d: complaints,
+    top_feature_requests_30d: requests,
+    volume_trend_14d: trend,
+  };
 }

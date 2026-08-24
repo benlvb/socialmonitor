@@ -31,9 +31,20 @@ export async function runJob(sql: Db, job: JobPayload): Promise<void> {
   if (!monitor || monitor.status !== "active") return;
 
   if (job.kind === "weekly_summary") {
-    await withStreamLock(sql, `${monitor.id}:_system`, "weekly_summary", () =>
-      runWeeklySummary(sql, monitor),
-    );
+    // Own error boundary: a summary failure must alert (summary_failed) and
+    // must NOT inherit fetch retry semantics — post-model-call retries re-bill.
+    try {
+      await withStreamLock(sql, `${monitor.id}:_system`, "weekly_summary", () =>
+        runWeeklySummary(sql, monitor),
+      );
+    } catch (err) {
+      await logEvent(sql, {
+        monitorId: monitor.id,
+        level: "error",
+        kind: "summary_failed",
+        message: `weekly summary failed: ${String(err)}`,
+      });
+    }
     return;
   }
 

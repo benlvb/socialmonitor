@@ -16,6 +16,7 @@ export interface PipelineEvent {
 /** Kinds that page the operator via the notifier (SPEC section 8). */
 const ALERT_KINDS = new Set([
   "breaker_tripped",
+  "summary_failed",
   "budget_paused",
   "mass_failure",
   "canary_message_content",

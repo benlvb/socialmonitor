@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./adapters": "./src/adapters/registry.ts",
-    "./repos": "./src/db/repos.ts"
+    "./repos": "./src/db/repos.ts",
+    "./llm": "./src/classify/anthropic.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
