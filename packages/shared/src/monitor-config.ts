@@ -59,6 +59,12 @@ export const MonitorConfigSchema = z.object({
       max_pages_per_fetch: z.number().int().min(1).max(10).default(3),
     })
     .prefault({}),
+  prefilter: z
+    .object({
+      min_chars: z.number().int().min(0).default(8),
+      mute_patterns: z.array(z.string()).default([]),
+    })
+    .prefault({}),
   model: z
     .object({
       classify: z.string().optional(),

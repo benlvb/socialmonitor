@@ -10,6 +10,7 @@
     "start": "tsx src/index.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "latest",
     "@socialmonitor/db": "workspace:*",
     "@socialmonitor/shared": "workspace:*",
     "zod": "^4.0.0"

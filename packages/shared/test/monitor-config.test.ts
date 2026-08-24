@@ -28,3 +28,11 @@ describe("validateMonitorConfig", () => {
     if (!r.ok) expect(r.issues[0]).toContain("budgets.daily_classifications");
   });
 });
+
+describe("prefilter config", () => {
+  it("defaults min_chars and mute_patterns", () => {
+    const c = parseMonitorConfig({});
+    expect(c.prefilter.min_chars).toBe(8);
+    expect(c.prefilter.mute_patterns).toEqual([]);
+  });
+});
