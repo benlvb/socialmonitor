@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseMonitorConfig } from "@socialmonitor/shared";
-import { prefilterReason } from "../src/classify/prefilter.js";
+import { prefilterReason } from "../src/classify/prefilter";
 
 const config = parseMonitorConfig({ prefilter: { mute_patterns: ["giveaway"] } });
 

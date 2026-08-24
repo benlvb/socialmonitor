@@ -1,11 +1,11 @@
 import { TransientError, errorFromStatus, type RawItem } from "@socialmonitor/shared";
 import type { Db } from "@socialmonitor/db";
-import type { MonitorRow, TargetRow } from "../db/repos.js";
-import type { FetchContext, FetchResult, SourceAdapter, StreamDef } from "./types.js";
-import { resolveCredentials, type Credentials } from "./credentials.js";
-import { fixtureMode, loadFixture } from "./fixtures.js";
-import { logEvent } from "../events.js";
-import { getTargets } from "../db/repos.js";
+import type { MonitorRow, TargetRow } from "../db/repos";
+import type { FetchContext, FetchResult, SourceAdapter, StreamDef } from "./types";
+import { resolveCredentials, type Credentials } from "./credentials";
+import { fixtureMode, loadFixture } from "./fixtures";
+import { logEvent } from "../events";
+import { getTargets } from "../db/repos";
 
 /**
  * Discord adapter (D9): bot REST polling with snowflake cursors, forward-only

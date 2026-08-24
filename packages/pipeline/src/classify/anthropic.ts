@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { PROMPT_CACHE_MARKER } from "@socialmonitor/shared";
-import type { BuiltPrompt } from "./prompt.js";
+import type { BuiltPrompt } from "./prompt";
 
 /**
  * Anthropic transport for the classifier (D12).

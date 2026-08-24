@@ -7,9 +7,9 @@ import {
   type JobPayload,
   type Source,
 } from "@socialmonitor/shared";
-import { getAdapter } from "./adapters/registry.js";
-import type { SourceAdapter, StreamDef } from "./adapters/types.js";
-import { runClassify } from "./classify/engine.js";
+import { getAdapter } from "./adapters/registry";
+import type { SourceAdapter, StreamDef } from "./adapters/types";
+import { runClassify } from "./classify/engine";
 import {
   getDueMetricsRefs,
   getMonitor,
@@ -20,9 +20,9 @@ import {
   markStreamFailure,
   markStreamSuccess,
   type MonitorRow,
-} from "./db/repos.js";
-import { logEvent } from "./events.js";
-import { withStreamLock } from "./queue.js";
+} from "./db/repos";
+import { logEvent } from "./events";
+import { withStreamLock } from "./queue";
 
 /** Entry point for one queued job — expands (monitor, source, kind) to streams. */
 export async function runJob(sql: Db, job: JobPayload): Promise<void> {

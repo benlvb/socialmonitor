@@ -1,11 +1,11 @@
 import type { Db } from "@socialmonitor/db";
 import type { Source } from "@socialmonitor/shared";
-import type { SourceAdapter } from "./types.js";
-import { xAdapter } from "./x.js";
-import { redditAdapter } from "./reddit.js";
-import { youtubeAdapter } from "./youtube.js";
-import { telegramAdapter } from "./telegram.js";
-import { discordAdapter } from "./discord.js";
+import type { SourceAdapter } from "./types";
+import { xAdapter } from "./x";
+import { redditAdapter } from "./reddit";
+import { youtubeAdapter } from "./youtube";
+import { telegramAdapter } from "./telegram";
+import { discordAdapter } from "./discord";
 
 const registry = new Map<Source, SourceAdapter>([
   ["x", xAdapter],

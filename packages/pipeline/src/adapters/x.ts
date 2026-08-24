@@ -1,9 +1,9 @@
 import { TransientError, SystemicError, errorFromStatus, type ItemRef, type MetricsRow, type RawItem } from "@socialmonitor/shared";
 import type { Db } from "@socialmonitor/db";
-import type { MonitorRow, TargetRow } from "../db/repos.js";
-import type { FetchContext, FetchResult, SourceAdapter, StreamDef } from "./types.js";
-import { resolveCredentials } from "./credentials.js";
-import { fixtureMode, loadFixture } from "./fixtures.js";
+import type { MonitorRow, TargetRow } from "../db/repos";
+import type { FetchContext, FetchResult, SourceAdapter, StreamDef } from "./types";
+import { resolveCredentials } from "./credentials";
+import { fixtureMode, loadFixture } from "./fixtures";
 
 /**
  * X adapter over a hosted scraper API — twitterapi.io (D5).

@@ -1,7 +1,7 @@
 import { createDb } from "@socialmonitor/db";
-import { archiveJob, deleteJob, readJobs, shouldArchive } from "./queue.js";
-import { runJob } from "./runner.js";
-import { logEvent } from "./events.js";
+import { archiveJob, deleteJob, readJobs, shouldArchive } from "./queue";
+import { runJob } from "./runner";
+import { logEvent } from "./events";
 
 const POLL_MS = 10_000;
 const CONCURRENCY = Math.max(1, Number(process.env.WORKER_CONCURRENCY ?? 2));

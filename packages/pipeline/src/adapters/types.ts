@@ -1,6 +1,6 @@
 import type { Db } from "@socialmonitor/db";
 import type { ItemRef, MetricsRow, RawItem, Source } from "@socialmonitor/shared";
-import type { MonitorRow, TargetRow } from "../db/repos.js";
+import type { MonitorRow, TargetRow } from "../db/repos";
 
 export interface AdapterStatus {
   configured: boolean;

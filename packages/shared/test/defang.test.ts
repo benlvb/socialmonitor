@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defangPromptMarkers, flattenForPrompt } from "../src/defang.js";
+import { defangPromptMarkers, flattenForPrompt } from "../src/defang";
 
 describe("defangPromptMarkers", () => {
   it("neutralizes injected instruction markers", () => {

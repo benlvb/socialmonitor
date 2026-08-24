@@ -1,4 +1,4 @@
-import type { Source } from "./constants.js";
+import type { Source } from "./constants";
 
 /** Normalized item every adapter must produce (SPEC section 3, raw_items). */
 export interface RawItem {

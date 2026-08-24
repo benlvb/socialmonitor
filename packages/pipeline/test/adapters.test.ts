@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parseMonitorConfig } from "@socialmonitor/shared";
 import type { Db } from "@socialmonitor/db";
-import type { MonitorRow } from "../src/db/repos.js";
-import { xAdapter } from "../src/adapters/x.js";
-import { redditAdapter } from "../src/adapters/reddit.js";
-import { youtubeAdapter } from "../src/adapters/youtube.js";
-import { telegramAdapter } from "../src/adapters/telegram.js";
-import { discordAdapter, datetimeToSnowflake, snowflakeToDatetime } from "../src/adapters/discord.js";
+import type { MonitorRow } from "../src/db/repos";
+import { xAdapter } from "../src/adapters/x";
+import { redditAdapter } from "../src/adapters/reddit";
+import { youtubeAdapter } from "../src/adapters/youtube";
+import { telegramAdapter } from "../src/adapters/telegram";
+import { discordAdapter, datetimeToSnowflake, snowflakeToDatetime } from "../src/adapters/discord";
 
 const monitor: MonitorRow = {
   id: "00000000-0000-0000-0000-000000000001",

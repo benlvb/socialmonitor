@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseMonitorConfig, PROMPT_CACHE_MARKER } from "@socialmonitor/shared";
-import { buildClassifyPrompt } from "../src/classify/prompt.js";
-import type { UnclassifiedItem } from "../src/db/repos.js";
+import { buildClassifyPrompt } from "../src/classify/prompt";
+import type { UnclassifiedItem } from "../src/db/repos";
 
 const config = parseMonitorConfig({
   context: "Monitoring the Acme widget product.",

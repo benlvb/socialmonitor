@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { JOB_KINDS, SOURCES } from "./constants.js";
+import { JOB_KINDS, SOURCES } from "./constants";
 
 /**
  * Queue message. Coarse-grained (monitor, source, kind): the worker expands to

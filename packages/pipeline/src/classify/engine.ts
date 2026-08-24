@@ -22,8 +22,8 @@ import {
   updateStreamMeta,
   type MonitorRow,
   type UnclassifiedItem,
-} from "../db/repos.js";
-import { logEvent } from "../events.js";
+} from "../db/repos";
+import { logEvent } from "../events";
 import {
   DEFAULT_CLASSIFY_MODEL,
   collectBatchResults,
@@ -32,9 +32,9 @@ import {
   getBatchStatus,
   submitClassifyBatch,
   type ClassifyRequest,
-} from "./anthropic.js";
-import { buildClassifyPrompt, PROMPT_VERSION } from "./prompt.js";
-import { prefilterReason } from "./prefilter.js";
+} from "./anthropic";
+import { buildClassifyPrompt, PROMPT_VERSION } from "./prompt";
+import { prefilterReason } from "./prefilter";
 
 const CLASSIFY_STREAM = "classify";
 const BATCH_LIMIT = 50;

@@ -1,9 +1,9 @@
 import { TransientError, errorFromStatus, type RawItem } from "@socialmonitor/shared";
 import type { Db } from "@socialmonitor/db";
-import type { MonitorRow, TargetRow } from "../db/repos.js";
-import type { FetchContext, FetchResult, SourceAdapter, StreamDef } from "./types.js";
-import { resolveCredentials, type Credentials } from "./credentials.js";
-import { fixtureMode, loadFixture } from "./fixtures.js";
+import type { MonitorRow, TargetRow } from "../db/repos";
+import type { FetchContext, FetchResult, SourceAdapter, StreamDef } from "./types";
+import { resolveCredentials, type Credentials } from "./credentials";
+import { fixtureMode, loadFixture } from "./fixtures";
 
 /**
  * Reddit adapter (D7): subreddit_posts, keyword_search, user_posts, comments.

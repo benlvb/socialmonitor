@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildClassificationJsonSchema,
   classificationOutputSchema,
-} from "../src/classification.js";
-import { parseMonitorConfig } from "../src/monitor-config.js";
+} from "../src/classification";
+import { parseMonitorConfig } from "../src/monitor-config";
 
 const config = parseMonitorConfig({
   tags: [{ name: "Mobile UX" }, { name: "Pricing" }, { name: "General" }],

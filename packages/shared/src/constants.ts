@@ -49,3 +49,21 @@ export const NO_IMPRESSION_SOURCES: readonly Source[] = ["reddit", "discord"];
 
 /** Breaker trips after this many consecutive systemic failures on a stream. */
 export const BREAKER_THRESHOLD = 3;
+
+/** Allowed target kinds per source (drives the monitor targets editor). */
+export const TARGET_KINDS: Record<Source, readonly string[]> = {
+  x: ["keyword", "account"],
+  reddit: ["subreddit", "keyword", "user"],
+  youtube: ["channel", "keyword"],
+  telegram: ["channel"],
+  discord: ["guild"],
+};
+
+/** Display labels for sources (UI). */
+export const SOURCE_LABELS: Record<Source, string> = {
+  x: "X / Twitter",
+  reddit: "Reddit",
+  youtube: "YouTube",
+  telegram: "Telegram",
+  discord: "Discord",
+};

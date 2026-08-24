@@ -9,7 +9,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@socialmonitor/db": "workspace:*",
+    "@socialmonitor/pipeline": "workspace:*",
     "@socialmonitor/shared": "workspace:*",
+    "marked": "latest",
+    "@supabase/ssr": "latest",
+    "@supabase/supabase-js": "latest",
+    "recharts": "latest",
     "next": "^16.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

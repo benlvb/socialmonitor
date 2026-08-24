@@ -7,7 +7,7 @@ import type { Integration } from "@socialmonitor/shared";
  * Returns null when unconfigured — callers must skip cleanly, never throw.
  */
 
-const ENV_KEYS: Record<Integration, string[]> = {
+export const ENV_KEYS: Record<Integration, string[]> = {
   x_scraper: ["TWITTERAPI_IO_KEY"],
   reddit: ["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET", "REDDIT_USERNAME", "REDDIT_PASSWORD"],
   youtube: ["YOUTUBE_API_KEY"],

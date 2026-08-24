@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatShortlist, jaccard, selectDedupCandidates, tokenize } from "../src/dedup.js";
+import { formatShortlist, jaccard, selectDedupCandidates, tokenize } from "../src/dedup";
 
 describe("tokenize", () => {
   it("lowercases, keeps alnum tokens >= 3 chars", () => {

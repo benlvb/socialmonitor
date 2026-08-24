@@ -7,7 +7,7 @@ import {
   type MonitorConfig,
   type ThemeCandidate,
 } from "@socialmonitor/shared";
-import type { UnclassifiedItem, VerdictExample } from "../db/repos.js";
+import type { UnclassifiedItem, VerdictExample } from "../db/repos";
 
 export const PROMPT_VERSION = "v1";
 

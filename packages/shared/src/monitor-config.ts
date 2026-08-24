@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DEFAULT_SIGNAL_TYPES, METRIC_CHECKPOINTS } from "./constants.js";
+import { DEFAULT_SIGNAL_TYPES, METRIC_CHECKPOINTS } from "./constants";
 
 export const SeedExampleSchema = z.object({
   text: z.string().min(1),

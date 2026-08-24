@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { MAX_DESCRIPTION_CHARS, MAX_TAGS_PER_ITEM, SENTIMENTS } from "./constants.js";
-import type { MonitorConfig } from "./monitor-config.js";
+import { MAX_DESCRIPTION_CHARS, MAX_TAGS_PER_ITEM, SENTIMENTS } from "./constants";
+import type { MonitorConfig } from "./monitor-config";
 
 /** Runtime validator for one classifier response (post-parse belt-and-braces). */
 export function classificationOutputSchema(config: MonitorConfig) {

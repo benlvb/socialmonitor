@@ -1,5 +1,5 @@
 import type { Db } from "@socialmonitor/db";
-import { notify } from "./notify.js";
+import { notify } from "./notify";
 
 export type EventLevel = "info" | "warn" | "error";
 

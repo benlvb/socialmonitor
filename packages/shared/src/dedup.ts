@@ -1,5 +1,5 @@
-import { DEDUP_POPULAR_FLOOR, DEDUP_TOP_K } from "./constants.js";
-import { flattenForPrompt } from "./defang.js";
+import { DEDUP_POPULAR_FLOOR, DEDUP_TOP_K } from "./constants";
+import { flattenForPrompt } from "./defang";
 
 export interface ThemeCandidate {
   signal_type: string;

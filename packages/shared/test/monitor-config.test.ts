@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { parseMonitorConfig, validateMonitorConfig } from "../src/monitor-config.js";
-import { DEFAULT_SIGNAL_TYPES } from "../src/constants.js";
+import { parseMonitorConfig, validateMonitorConfig } from "../src/monitor-config";
+import { DEFAULT_SIGNAL_TYPES } from "../src/constants";
 
 describe("parseMonitorConfig", () => {
   it("fully defaults an empty config", () => {
