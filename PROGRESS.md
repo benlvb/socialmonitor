@@ -1,13 +1,13 @@
 # PROGRESS
 
 ## Done
+- 2026-08-24: P0 scaffold complete: pnpm monorepo (shared, db, pipeline, web), initial migration (schema+RLS+pgmq+pg_cron producer), 21 shared tests green, web builds.
 - 2026-08-24: Spec interview complete (22 decisions, see SPEC.md §0). SPEC.md + CLAUDE.md written.
 
 ## In progress
-- P0 scaffold: monorepo, shared schemas, migrations, queue SQL, worker + web skeletons.
+- P1 pipeline core (job runner, cursors/breakers, classifier, themes, budgets, guards)
 
 ## Next
-- P1 pipeline core (job runner, cursors/breakers, classifier, themes, budgets, guards — fixture-proven)
 - P2 source adapters (x, reddit, youtube, telegram, discord) + metrics refresh
 - P3 web (auth, connections, monitor CRUD, dashboard v1, corrections)
 - P4 /ask + weekly summary + notifier

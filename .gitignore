@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.next/
+.vercel/
+.turbo/
+coverage/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+!.env.example
+supabase/.temp/
+.claude/settings.local.json

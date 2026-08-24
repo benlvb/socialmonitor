@@ -1,0 +1,14 @@
+import type { ReactNode } from "react";
+
+export const metadata = {
+  title: "socialmonitor",
+  description: "Configurable multi-source social monitoring",
+};
+
+export default function RootLayout({ children }: { children: ReactNode }) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
