@@ -6,6 +6,7 @@ import { parseMonitorConfig } from "@socialmonitor/shared";
 import { getMonthCostUsd, recordUsage } from "@socialmonitor/pipeline/repos";
 import { DEFAULT_NARRATE_MODEL, estimateCostUsd } from "@socialmonitor/pipeline/llm";
 import { createClient } from "../../../lib/supabase/server";
+import { isAllowedEmail } from "../../../lib/allowlist";
 import { ASK_TOOLS, buildDigest, runAskTool } from "../../../lib/ask-tools";
 
 export const maxDuration = 120;
@@ -53,6 +54,9 @@ export async function POST(request: Request): Promise<NextResponse> {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
+  if (!isAllowedEmail(user.email ?? "")) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
 
   const parsed = BodySchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {

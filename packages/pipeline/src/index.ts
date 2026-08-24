@@ -2,6 +2,7 @@ import { createDb } from "@socialmonitor/db";
 import { archiveJob, deleteJob, readJobs, shouldArchive } from "./queue";
 import { runJob } from "./runner";
 import { logEvent } from "./events";
+import { notify } from "./notify";
 
 const POLL_MS = 10_000;
 const CONCURRENCY = Math.max(1, Number(process.env.WORKER_CONCURRENCY ?? 2));
@@ -29,6 +30,25 @@ async function main(): Promise<void> {
 
   process.on("SIGTERM", () => (shuttingDown = true));
   process.on("SIGINT", () => (shuttingDown = true));
+
+  // Global ops watch: monitor-less error events (e.g. partition_maintenance_failed
+  // raised inside pg_cron) are invisible to the UI since events went owner-scoped
+  // (audit #26c) - page the operator from here instead.
+  let lastGlobalCheck = new Date();
+  setInterval(() => {
+    void (async () => {
+      try {
+        const rows = await db`
+          select kind, message from pipeline_events
+          where monitor_id is null and level = 'error' and created_at > ${lastGlobalCheck}
+          order by created_at asc limit 10`;
+        lastGlobalCheck = new Date();
+        for (const r of rows) await notify(`${r.kind}\n${r.message}`);
+      } catch (err) {
+        console.error("[worker] global event watch failed", err);
+      }
+    })();
+  }, 5 * 60 * 1000).unref();
 
   while (!shuttingDown) {
     let jobs;

@@ -67,8 +67,9 @@ export async function runClassify(sql: Db, monitor: MonitorRow, source: Source):
   // Phase B: budget gates.
   const monthCost = await getMonthCostUsd(sql);
   if (monthCost >= GLOBAL_CAP_USD) {
-    if (!(await hasEventToday(sql, null, "budget_paused"))) {
+    if (!(await hasEventToday(sql, monitor.id, "budget_paused"))) {
       await logEvent(sql, {
+        monitorId: monitor.id,
         level: "error",
         kind: "budget_paused",
         message: `Global monthly LLM cap hit ($${monthCost.toFixed(2)} >= $${GLOBAL_CAP_USD}). Classification paused; fetching continues.`,

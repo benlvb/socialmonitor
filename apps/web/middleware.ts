@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { isAllowedEmail } from "./lib/allowlist";
 
 export async function middleware(request: NextRequest) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL;
@@ -29,6 +30,17 @@ export async function middleware(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const isLogin = request.nextUrl.pathname.startsWith("/login");
+
+  // Allowlist is a SESSION property, not a login-form check: Supabase auth
+  // endpoints are public, so a self-signed-up session must be rejected here
+  // (audit #2).
+  if (user && !isAllowedEmail(user.email ?? "")) {
+    await supabase.auth.signOut();
+    const redirect = request.nextUrl.clone();
+    redirect.pathname = "/login";
+    return NextResponse.redirect(redirect);
+  }
+
   if (!user && !isLogin) {
     const redirect = request.nextUrl.clone();
     redirect.pathname = "/login";

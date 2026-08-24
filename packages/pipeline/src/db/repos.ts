@@ -124,6 +124,15 @@ export async function markStreamFailure(
 /** Store raw immediately; idempotent; FULL column list (omitted-column blanking rule). */
 export async function insertRawItems(sql: Db, items: RawItem[]): Promise<number> {
   if (items.length === 0) return 0;
+  // Clamp far-future posted_at (scheduled premieres, clock skew): such rows land
+  // in raw_items_default and later make partition creation error (audit #5).
+  const maxFuture = Date.now() + 48 * 3600 * 1000;
+  for (const i of items) {
+    if (i.postedAt.getTime() > maxFuture) {
+      i.metrics = { ...i.metrics, original_posted_at: i.postedAt.toISOString() };
+      i.postedAt = new Date();
+    }
+  }
   const rows = items.map((i) => ({
     monitor_id: i.monitorId,
     source: i.source,

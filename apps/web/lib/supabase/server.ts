@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { isAllowedEmail } from "../allowlist";
 
 export function supabaseConfigured(): boolean {
   return Boolean(
@@ -38,5 +39,9 @@ export async function requireUser() {
   const {
     data: { user },
   } = await supabase.auth.getUser();
+  // Allowlist enforced on every session use, not only at login (audit #2).
+  if (user && !isAllowedEmail(user.email ?? "")) {
+    return { supabase, user: null };
+  }
   return { supabase, user };
 }
