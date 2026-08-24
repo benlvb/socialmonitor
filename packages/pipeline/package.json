@@ -13,6 +13,7 @@
     "@anthropic-ai/sdk": "latest",
     "@socialmonitor/db": "workspace:*",
     "@socialmonitor/shared": "workspace:*",
+    "telegram": "latest",
     "zod": "^4.0.0"
   },
   "devDependencies": {

@@ -1,0 +1,27 @@
+[
+  {
+    "id": "1408100000000000001",
+    "channel_id": "990001",
+    "guild_id": "880001",
+    "channel_name": "support",
+    "content": "SSO login loops back to the sign-in page for everyone on our Okta org since this morning. Cleared cookies, tried three browsers.",
+    "author": { "id": "770001", "username": "itadmin_joe", "global_name": "Joe" }
+  },
+  {
+    "id": "1408100000000000002",
+    "channel_id": "990001",
+    "guild_id": "880001",
+    "channel_name": "support",
+    "content": "+1 same here, our whole team is locked out",
+    "author": { "id": "770002", "username": "renata_k", "global_name": "Renata" },
+    "message_reference": { "message_id": "1408100000000000001", "channel_id": "990001" }
+  },
+  {
+    "id": "1408100000000000003",
+    "channel_id": "990002",
+    "guild_id": "880001",
+    "channel_name": "general",
+    "content": "thanks!",
+    "author": { "id": "770003", "username": "casual_dan", "global_name": "Dan" }
+  }
+]

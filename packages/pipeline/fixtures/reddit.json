@@ -1,0 +1,48 @@
+[
+  {
+    "kind": "t3",
+    "data": {
+      "id": "1mxk2ab",
+      "name": "t3_1mxk2ab",
+      "title": "Acme widget silently drops data points on dashboards with more than 50 series",
+      "selftext": "Took me a week to notice. If you add more than 50 series to one dashboard, anything past 50 just doesn't render — no warning, no error. Support confirmed it's a known limit but it's documented nowhere.",
+      "author": "data_janitor",
+      "created_utc": 1755680400,
+      "permalink": "/r/analytics/comments/1mxk2ab/acme_widget_silently_drops/",
+      "subreddit": "analytics",
+      "score": 87,
+      "num_comments": 23,
+      "upvote_ratio": 0.96
+    }
+  },
+  {
+    "kind": "t3",
+    "data": {
+      "id": "1mxl9cd",
+      "name": "t3_1mxl9cd",
+      "title": "Is acme widget worth it for a 3-person startup?",
+      "selftext": "Deciding between acme widget and building our own dashboards. Anyone using it at small scale?",
+      "author": "founder_amy",
+      "created_utc": 1755727200,
+      "permalink": "/r/startups/comments/1mxl9cd/is_acme_widget_worth_it/",
+      "subreddit": "startups",
+      "score": 12,
+      "num_comments": 9,
+      "upvote_ratio": 0.9
+    }
+  },
+  {
+    "kind": "t1",
+    "data": {
+      "id": "n8xyz01",
+      "name": "t1_n8xyz01",
+      "body": "We're on the team plan — the mobile app is the weak spot, charts render fine on desktop but the phone app is basically read-only and slow.",
+      "author": "quietbuilder",
+      "created_utc": 1755730800,
+      "permalink": "/r/startups/comments/1mxl9cd/is_acme_widget_worth_it/n8xyz01/",
+      "subreddit": "startups",
+      "score": 15,
+      "link_title": "Is acme widget worth it for a 3-person startup?"
+    }
+  }
+]

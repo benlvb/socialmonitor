@@ -1,0 +1,32 @@
+[
+  {
+    "id": "UgzCommentAAA",
+    "snippet": {
+      "videoId": "aBcD1234xyz",
+      "topLevelComment": {
+        "snippet": {
+          "textOriginal": "The pricing change killed it for us. We migrated off last month after the 40% jump — fine product, unjustifiable cost at team scale.",
+          "authorDisplayName": "ops_marta",
+          "authorChannelId": { "value": "UCuser001" },
+          "likeCount": 41,
+          "publishedAt": "2026-08-20T10:15:00Z"
+        }
+      }
+    }
+  },
+  {
+    "id": "UgzCommentBBB",
+    "snippet": {
+      "videoId": "aBcD1234xyz",
+      "topLevelComment": {
+        "snippet": {
+          "textOriginal": "does anyone know if the API supports webhooks yet? docs only mention polling",
+          "authorDisplayName": "devkumar",
+          "authorChannelId": { "value": "UCuser002" },
+          "likeCount": 3,
+          "publishedAt": "2026-08-21T14:40:00Z"
+        }
+      }
+    }
+  }
+]

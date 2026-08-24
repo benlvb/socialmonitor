@@ -1,0 +1,56 @@
+[
+  {
+    "id": "1958100000000000001",
+    "url": "https://x.com/sarahdev/status/1958100000000000001",
+    "text": "the acme widget app keeps crashing every time I open the settings page. third time this week, on iOS 19. anyone else?",
+    "createdAt": "Thu Aug 20 09:15:30 +0000 2026",
+    "author": { "id": "88001", "userName": "sarahdev", "name": "Sarah D", "followers": 4200 },
+    "likeCount": 18, "replyCount": 7, "retweetCount": 2, "quoteCount": 1, "viewCount": 5400,
+    "isReply": false
+  },
+  {
+    "id": "1958100000000000002",
+    "url": "https://x.com/mikebuilds/status/1958100000000000002",
+    "text": "would love if @acmewidget supported exporting reports to CSV. the PDF-only export makes it useless for our finance team",
+    "createdAt": "Thu Aug 20 11:42:00 +0000 2026",
+    "author": { "id": "88002", "userName": "mikebuilds", "name": "Mike B", "followers": 12800 },
+    "likeCount": 44, "replyCount": 12, "retweetCount": 6, "quoteCount": 0, "viewCount": 21000,
+    "isReply": false
+  },
+  {
+    "id": "1958100000000000003",
+    "url": "https://x.com/jchen_/status/1958100000000000003",
+    "text": "is there a way to share an acme widget dashboard with someone who doesn't have an account?",
+    "createdAt": "Thu Aug 20 14:05:12 +0000 2026",
+    "author": { "id": "88003", "userName": "jchen_", "name": "J Chen", "followers": 350 },
+    "likeCount": 2, "replyCount": 1, "retweetCount": 0, "quoteCount": 0, "viewCount": 800,
+    "isReply": false
+  },
+  {
+    "id": "1958100000000000004",
+    "url": "https://x.com/oplytics/status/1958100000000000004",
+    "text": "switched our whole team to acme widget last month. genuinely the best dashboard tool we've used, and support actually responds",
+    "createdAt": "Fri Aug 21 08:30:45 +0000 2026",
+    "author": { "id": "88004", "userName": "oplytics", "name": "Oply", "followers": 940 },
+    "likeCount": 31, "replyCount": 4, "retweetCount": 3, "quoteCount": 1, "viewCount": 9800,
+    "isReply": false
+  },
+  {
+    "id": "1958100000000000005",
+    "url": "https://x.com/cryptoape9000/status/1958100000000000005",
+    "text": "🚀🚀 HUGE giveaway!! follow + RT to win $500!! @acmewidget @user1 @user2 #giveaway",
+    "createdAt": "Fri Aug 21 10:00:00 +0000 2026",
+    "author": { "id": "88005", "userName": "cryptoape9000", "name": "Ape", "followers": 120 },
+    "likeCount": 3, "replyCount": 0, "retweetCount": 5, "quoteCount": 0, "viewCount": 400,
+    "isReply": false
+  },
+  {
+    "id": "1958100000000000006",
+    "url": "https://x.com/linkbot/status/1958100000000000006",
+    "text": "https://example.com/blog/post-about-widgets",
+    "createdAt": "Fri Aug 21 12:20:00 +0000 2026",
+    "author": { "id": "88006", "userName": "linkbot", "name": "Linkbot", "followers": 50 },
+    "likeCount": 0, "replyCount": 0, "retweetCount": 0, "quoteCount": 0, "viewCount": 90,
+    "isReply": false
+  }
+]

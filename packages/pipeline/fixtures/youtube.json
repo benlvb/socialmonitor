@@ -1,0 +1,22 @@
+[
+  {
+    "snippet": {
+      "publishedAt": "2026-08-19T16:00:00Z",
+      "title": "Acme Widget in 2026 — honest review after 6 months",
+      "description": "I've been running acme widget for half a year across two client projects. The good: dashboard speed, the new API. The bad: pricing jumped 40% and the mobile app still can't edit charts.",
+      "channelTitle": "DashboardDaily",
+      "channelId": "UCdash001",
+      "resourceId": { "videoId": "aBcD1234xyz" }
+    }
+  },
+  {
+    "snippet": {
+      "publishedAt": "2026-08-21T09:30:00Z",
+      "title": "Acme announces Widget 3.0 with realtime collaboration",
+      "description": "Coverage of this week's launch event: realtime multi-user editing, a plugin marketplace, and a new free tier.",
+      "channelTitle": "TechBriefs",
+      "channelId": "UCtech002",
+      "resourceId": { "videoId": "eFgH5678abc" }
+    }
+  }
+]
