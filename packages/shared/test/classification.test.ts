@@ -14,8 +14,24 @@ describe("buildClassificationJsonSchema", () => {
     const s = buildClassificationJsonSchema(config) as any;
     expect(s.properties.signal_type.enum).toContain("feature_request");
     expect(s.properties.tags.items.enum).toEqual(["Mobile UX", "Pricing", "General"]);
-    expect(s.properties.tags.maxItems).toBe(3);
     expect(s.required).toContain("reasoning");
+  });
+
+  it("emits ONLY structured-output-supported keywords (audit: raw dict is not transformed)", () => {
+    const s = buildClassificationJsonSchema(config);
+    const banned = ["maxItems", "minItems", "minimum", "maximum", "maxLength", "minLength", "pattern", "format"];
+    const walk = (node: unknown, path = "$"): void => {
+      if (Array.isArray(node)) return node.forEach((n, i) => walk(n, `${path}[${i}]`));
+      if (node && typeof node === "object") {
+        for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+          expect(banned, `${path}.${k} is not a supported keyword`).not.toContain(k);
+          walk(v, `${path}.${k}`);
+        }
+      }
+    };
+    walk(s);
+    // constraints survive as guidance, and are enforced locally by the zod validator
+    expect(JSON.stringify(s)).toContain("ONE tag is the normal answer");
   });
 });
 

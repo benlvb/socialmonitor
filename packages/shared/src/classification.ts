@@ -30,6 +30,14 @@ export type ClassificationOutput = z.infer<ReturnType<typeof classificationOutpu
  * JSON Schema sent to the LLM for native structured output.
  * Enums are built at runtime from monitor config (D3): editing the taxonomy
  * changes the schema on the next call — no migration, no deploy.
+ *
+ * IMPORTANT: only the keyword subset structured outputs accepts may appear here
+ * (type / enum / properties / required / additionalProperties / items). Numeric,
+ * string, and array-size constraints (minimum, maximum, maxLength, maxItems) are
+ * NOT part of that subset — this schema is attached as a raw dict, so nothing
+ * strips them and an unsupported keyword can reject every request. They are
+ * expressed as `description` guidance instead, and enforced locally by
+ * `classificationOutputSchema` (which caps tags and truncates the description).
  */
 export function buildClassificationJsonSchema(config: MonitorConfig): Record<string, unknown> {
   const tagNames = config.tags.map((t) => t.name);
@@ -58,11 +66,22 @@ export function buildClassificationJsonSchema(config: MonitorConfig): Record<str
       tags: {
         type: "array",
         items: tagNames.length > 0 ? { type: "string", enum: tagNames } : { type: "string" },
-        maxItems: MAX_TAGS_PER_ITEM,
+        description: `The tags that capture what this is ABOUT. ONE tag is the normal answer; at most ${MAX_TAGS_PER_ITEM}. Do not pad.`,
       },
-      score: { type: "integer", minimum: 1, maximum: 10 },
-      description: { type: "string", maxLength: MAX_DESCRIPTION_CHARS },
-      matched_existing_description: { type: "string" },
+      score: {
+        type: "integer",
+        description:
+          "Constructiveness from 1 to 10 inclusive. 1-3 venting/empty, 4-6 a real point buried in noise, 7-10 constructive and specific.",
+      },
+      description: {
+        type: "string",
+        description: `The dedup key: one sentence, under ${MAX_DESCRIPTION_CHARS} characters.`,
+      },
+      matched_existing_description: {
+        type: "string",
+        description:
+          "Exact description of an existing tracked entry this matches, or an empty string.",
+      },
     },
   };
 }

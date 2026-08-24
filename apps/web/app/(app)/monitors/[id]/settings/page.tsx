@@ -38,7 +38,9 @@ export default async function MonitorSettingsPage({
         <p className="field-hint">
           Fetching is forward-only by default. This deliberately rewinds every fetch stream
           to pull history (idempotent - overlaps are safe; source budgets still apply).
-          Telegram pulls the latest ~100 messages per channel regardless of window.
+          Per-source: X / Reddit / YouTube rewind by date and walk forward a page at a time;
+          Discord rewinds every channel it has already synced; Telegram rewinds a bounded
+          number of messages from its current position (and is skipped before its first sync).
         </p>
         <form action={backfill.bind(null, monitor.id)} className="row">
           <select name="days" defaultValue="7">

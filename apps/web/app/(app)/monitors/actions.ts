@@ -68,25 +68,31 @@ export async function updateMonitor(
     return { error: "Targets payload malformed." };
   }
 
-  const { error } = await supabase
+  // .select().single() is load-bearing (audit #7): a zero-row update returns
+  // error: null under RLS, and the target replace below runs on the
+  // RLS-bypassing service connection.
+  const { data: owned, error } = await supabase
     .from("monitors")
     .update({ name, status, config: configJson })
-    .eq("id", monitorId);
+    .eq("id", monitorId)
+    .select("id")
+    .single();
   if (error) return { error: error.message };
+  if (!owned) return { error: "Monitor not found." };
 
-  // Replace targets: deduped and TRANSACTIONAL — the old delete-then-insert
-  // wiped every target when the insert hit the unique constraint (audit #12).
-  // Ownership was verified by the RLS-scoped monitor update above.
+  // Target rows are UPSERTED IN PLACE, never delete-then-recreate (audit #3):
+  // a target's UUID is its stream identity (`search/<id>`, `guild/<id>`…), so
+  // regenerating ids on an unrelated config edit resets every cursor and
+  // silently drops one fetch-window of data on every source. Deduped and
+  // transactional (audit #12); ownership verified above.
   const seen = new Set<string>();
   const rows = targets
     .filter((t) => t.value.trim())
     .map((t) => ({
-      monitor_id: monitorId,
       source: t.source,
       kind: t.kind,
       value: t.value.trim(),
       enabled: t.enabled,
-      config: "{}",
     }))
     .filter((t) => {
       const key = `${t.source}:${t.kind}:${t.value}`;
@@ -94,13 +100,30 @@ export async function updateMonitor(
       seen.add(key);
       return true;
     });
+
   const sqlDb = createDb();
   if (!sqlDb) return { error: "DATABASE_URL not configured on the web app." };
   try {
     await sqlDb.begin(async (tx) => {
-      await tx`delete from targets where monitor_id = ${monitorId}`;
-      if (rows.length > 0) {
-        await tx`insert into targets ${tx(rows)}`;
+      const keep: string[] = [];
+      for (const r of rows) {
+        const [row] = await tx`
+          insert into targets (monitor_id, source, kind, value, enabled, config)
+          values (${monitorId}, ${r.source}, ${r.kind}, ${r.value}, ${r.enabled}, ${"{}"}::jsonb)
+          on conflict (monitor_id, source, kind, value)
+          do update set enabled = excluded.enabled
+          returning id`;
+        keep.push(row!.id as string);
+      }
+      // Remove targets the operator deleted, and retire their stream state so
+      // the health panel doesn't fill with permanently-stale rows.
+      const removed = keep.length
+        ? await tx`delete from targets where monitor_id = ${monitorId} and id <> all(${keep}::uuid[]) returning id`
+        : await tx`delete from targets where monitor_id = ${monitorId} returning id`;
+      for (const r of removed) {
+        await tx`
+          delete from sync_streams
+          where monitor_id = ${monitorId} and stream like ${"%/" + (r.id as string)}`;
       }
     });
   } catch (err) {

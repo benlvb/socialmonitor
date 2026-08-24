@@ -91,8 +91,17 @@ const DISCORD_EPOCH = 1420070400000n;
 const dateToSnowflake = (d: Date): string =>
   ((BigInt(d.getTime()) - DISCORD_EPOCH) << 22n).toString();
 
-/** Backfill cursor value per source: "everything newer than (now - days)". */
-function backfillCursor(source: Source, days: number): string {
+/** Rough messages-per-day assumption used to bound a Telegram rewind. */
+const TELEGRAM_MSGS_PER_DAY = 50;
+const TELEGRAM_MAX_REWIND = 1000;
+
+/**
+ * Backfill cursor per source. Each platform's cursor has different semantics,
+ * and they diverged from this action when the adapters were reworked
+ * (audit #5) — this is the single place that knows the mapping.
+ * Returns null when the source cannot be rewound by a date window.
+ */
+function backfillCursor(source: Source, days: number): string | null {
   const since = new Date(Date.now() - days * 864e5);
   switch (source) {
     case "x":
@@ -103,19 +112,14 @@ function backfillCursor(source: Source, days: number): string {
     case "discord":
       return dateToSnowflake(since);
     case "telegram":
-      // Message-id cursors can't encode a date; "0" pulls the latest ~100
-      // messages per channel — the practical backfill for public channels.
-      return "0";
+      // Message-id cursors cannot encode a date, and minId=0 means "from the
+      // beginning of the channel" — which would crawl years of history through
+      // the classifier. Handled separately as a bounded rewind from the
+      // CURRENT cursor; never from zero.
+      return null;
   }
 }
 
-/**
- * Deliberate historical fetch (forward-only is the default; this is the
- * explicit exception, SPEC section 9). Sets every fetch stream's cursor back
- * to the requested window and enqueues immediate fetch+classify. Refetching
- * overlap is harmless — all writes are idempotent. Source budgets (x reads,
- * youtube search) still apply.
- */
 export async function backfill(monitorId: string, formData: FormData): Promise<void> {
   const days = Math.max(1, Math.min(30, Number(formData.get("days") ?? 7)));
   const { monitor, targets } = await ownedMonitor(monitorId);
@@ -131,6 +135,8 @@ export async function backfill(monitorId: string, formData: FormData): Promise<v
       config: parseMonitorConfig(monitor.config),
     };
     const sources = [...new Set(targets.map((t) => t.source))] as Source[];
+    const notes: string[] = [];
+
     for (const source of sources) {
       if (!SOURCES.includes(source)) continue;
       const adapter = getAdapter(source);
@@ -139,27 +145,87 @@ export async function backfill(monitorId: string, formData: FormData): Promise<v
         targets.filter((t) => t.source === source) as unknown as TargetRow[],
       );
       const cursor = backfillCursor(source, days);
+
       for (const s of streams) {
-        // classify/comments streams derive from raw items; only rewind fetch streams
+        // Comment streams derive from stored parents and carry no cursor.
         if (s.stream === "comments") continue;
+
+        const existing = await sql`
+          select cursor, cursor_meta from sync_streams
+          where monitor_id = ${monitorId} and source = ${source} and stream = ${s.stream}`;
+        const prevCursor = existing[0]?.cursor as string | null | undefined;
+        const prevMeta = (existing[0]?.cursor_meta ?? {}) as Record<string, unknown>;
+
+        if (source === "discord") {
+          // Discord consults cursor_meta.channels FIRST — rewinding the scalar
+          // cursor alone was a silent no-op (audit #5).
+          const snowflake = cursor!;
+          const channels = { ...((prevMeta.channels as Record<string, string>) ?? {}) };
+          for (const id of Object.keys(channels)) channels[id] = snowflake;
+          const meta = JSON.stringify({ ...prevMeta, channels, canary_strikes: 0 });
+          await sql`
+            insert into sync_streams
+              (monitor_id, source, stream, cursor, cursor_meta, rows_total,
+               consecutive_failures, breaker_tripped_at, last_run_at, last_success_at, updated_at)
+            values (${monitorId}, ${source}, ${s.stream}, ${snowflake}, ${meta}::jsonb, 0,
+                    0, null, null, null, now())
+            on conflict (monitor_id, source, stream) do update set
+              cursor = ${snowflake},
+              cursor_meta = ${meta}::jsonb,
+              consecutive_failures = 0,
+              breaker_tripped_at = null,
+              updated_at = now()`;
+          notes.push(
+            `discord: ${Object.keys(channels).length} known channel(s) rewound${
+              Object.keys(channels).length === 0 ? " (none synced yet — nothing to rewind)" : ""
+            }`,
+          );
+          continue;
+        }
+
+        if (source === "telegram") {
+          // Bounded rewind from the current position; NEVER 0 (that means
+          // "from the channel's first message" and crawls all history).
+          if (!prevCursor || Number(prevCursor) <= 1) {
+            notes.push("telegram: skipped (no synced position yet to rewind from)");
+            continue;
+          }
+          const back = Math.min(days * TELEGRAM_MSGS_PER_DAY, TELEGRAM_MAX_REWIND);
+          const rewound = String(Math.max(1, Number(prevCursor) - back));
+          await sql`
+            update sync_streams
+            set cursor = ${rewound}, consecutive_failures = 0,
+                breaker_tripped_at = null, updated_at = now()
+            where monitor_id = ${monitorId} and source = ${source} and stream = ${s.stream}`;
+          notes.push(`telegram: rewound ~${back} messages`);
+          continue;
+        }
+
+        const meta = JSON.stringify({ ...prevMeta, pending_until: null, pending_newest: null });
         await sql`
           insert into sync_streams
-            (monitor_id, source, stream, cursor, consecutive_failures, breaker_tripped_at, updated_at)
-          values (${monitorId}, ${source}, ${s.stream}, ${cursor}, 0, null, now())
+            (monitor_id, source, stream, cursor, cursor_meta, rows_total,
+             consecutive_failures, breaker_tripped_at, last_run_at, last_success_at, updated_at)
+          values (${monitorId}, ${source}, ${s.stream}, ${cursor}, ${meta}::jsonb, 0,
+                  0, null, null, null, now())
           on conflict (monitor_id, source, stream) do update set
             cursor = ${cursor},
+            cursor_meta = ${meta}::jsonb,
             consecutive_failures = 0,
             breaker_tripped_at = null,
             updated_at = now()`;
       }
+
       await enqueue(sql, monitorId, source, "fetch");
       await enqueue(sql, monitorId, source, "classify");
     }
+
     await logInfo(
       sql,
       monitorId,
       "backfill_started",
-      `backfill last ${days}d on ${sources.join(", ") || "no sources"} (telegram: latest ~100/channel)`,
+      `backfill last ${days}d on ${sources.join(", ") || "no sources"}` +
+        (notes.length ? ` — ${notes.join("; ")}` : ""),
     );
   } finally {
     await sql.end({ timeout: 3 });
