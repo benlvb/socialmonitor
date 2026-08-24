@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { validateMonitorConfig } from "@socialmonitor/shared";
 import { requireUser } from "../../../lib/supabase/server";
+import { templateConfig } from "../../../lib/monitor-templates";
 
 export interface MonitorFormState {
   error?: string;
@@ -19,10 +20,11 @@ export async function createMonitor(
   if (!user) return { error: "Not signed in." };
   const name = String(formData.get("name") ?? "").trim();
   if (!name) return { error: "Name is required." };
+  const config = templateConfig(String(formData.get("template") ?? "blank"));
 
   const { data, error } = await supabase
     .from("monitors")
-    .insert({ owner_id: user.id, name, status: "active", config: {} })
+    .insert({ owner_id: user.id, name, status: "active", config })
     .select("id")
     .single();
   if (error) return { error: error.message };

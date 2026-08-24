@@ -70,5 +70,5 @@ against real credentials (expect field drift vs fixtures — that trade-off is D
 
 ## Known deferred items (v2 parking lot)
 Authors/spikes dashboard · review queue · Slack notifier · official X API adapter ·
-breaker-reset button in the UI (SQL-only today) · embedding-based cross-source
+embedding-based cross-source
 clustering · multi-tenant signup/billing.

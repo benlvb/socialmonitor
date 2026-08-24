@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { parseMonitorConfig } from "@socialmonitor/shared";
 import { requireUser } from "../../../../../lib/supabase/server";
+import { backfill } from "../ops-actions";
 import { SettingsForm } from "./settings-form";
 import type { TargetRowInput } from "../../../../../components/targets-editor";
 
@@ -32,6 +33,23 @@ export default async function MonitorSettingsPage({
   return (
     <>
       <h1>{monitor.name} — settings</h1>
+      <div className="card">
+        <h2>Backfill</h2>
+        <p className="field-hint">
+          Fetching is forward-only by default. This deliberately rewinds every fetch stream
+          to pull history (idempotent - overlaps are safe; source budgets still apply).
+          Telegram pulls the latest ~100 messages per channel regardless of window.
+        </p>
+        <form action={backfill.bind(null, monitor.id)} className="row">
+          <select name="days" defaultValue="7">
+            {[1, 3, 7, 14, 30].map((d) => (
+              <option key={d} value={d}>last {d} day{d > 1 ? "s" : ""}</option>
+            ))}
+          </select>
+          <button type="submit">Backfill now</button>
+        </form>
+      </div>
+
       <SettingsForm
         monitorId={monitor.id}
         name={monitor.name}

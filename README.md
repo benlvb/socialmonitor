@@ -127,7 +127,9 @@ button per integration) or as env vars — Vault wins when both exist.
 
 ## Your first monitor
 
-**App → New monitor**, then on the settings page:
+**App → New monitor** — pick a starter template (Brand watch / Competitor watch /
+Topic watch) or Blank; templates pre-fill taxonomy, noise rules, and seed examples
+with [BRACKETED] placeholders to edit. Then on the settings page:
 
 **Targets** — what to watch, per platform:
 
@@ -180,7 +182,10 @@ the fields that matter most:
 ```
 
 Copy the JSON out to export a monitor; paste to import. Save → the cron producer picks it
-up within ~5 minutes → watch the dashboard's **Pipeline health** panel.
+up within ~5 minutes — or hit **Run now** on the dashboard to skip the wait. To pull
+history for a fresh monitor, use **Backfill** on the settings page (deliberate,
+idempotent, budget-respecting; Telegram pulls the latest ~100 per channel). Watch the
+dashboard's **Pipeline health** panel.
 
 ## Day to day
 
@@ -204,12 +209,12 @@ up within ~5 minutes → watch the dashboard's **Pipeline health** panel.
 | Symptom | Meaning | Do |
 |---|---|---|
 | Source pill ⚪ awaiting credentials | No key found (Vault or env) | Add on Connections, hit **Test connection** |
-| Stream shows `breaker` | N consecutive systemic failures (bad key, deleted channel, kicked bot) | Fix the cause, then reset: `update sync_streams set breaker_tripped_at = null, consecutive_failures = 0 where stream = '…';` in the Supabase SQL editor |
+| Stream shows `breaker` | N consecutive systemic failures (bad key, deleted channel, kicked bot) | Fix the cause, then hit **Reset** next to the breaker pill in Pipeline health (clears it and retries immediately) |
 | `budget_paused` alert | Monthly LLM cap reached | Raise `GLOBAL_MONTHLY_LLM_CAP_USD` or wait; fetching continued, nothing was lost |
 | `canary_message_content` alert | Discord returns messages with empty content — the MESSAGE_CONTENT intent was lost | Re-enable the intent in the Discord developer portal |
 | `mass_failure` alert | A classify batch processed items but classified zero | Check ANTHROPIC_API_KEY validity and the worker logs |
 | Items fetched but never classified | No Anthropic key, daily budget spent, or a batch is still processing (30-min cadence) | Dashboard budget tile + worker logs show which |
-| Nothing happens after saving a monitor | Producer runs every 5 min; worker may be down | Railway logs; `select * from pgmq.metrics('pipeline_jobs');` |
+| Nothing happens after saving a monitor | Producer runs every 5 min; worker may be down | **Run now** on the dashboard; if still nothing: Railway logs; `select * from pgmq.metrics('pipeline_jobs');` |
 
 More depth: [docs/runbook/operator.md](./docs/runbook/operator.md).
 

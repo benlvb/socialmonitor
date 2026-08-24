@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { NO_IMPRESSION_SOURCES, SOURCES, type Source } from "@socialmonitor/shared";
 import { requireUser } from "../../../../lib/supabase/server";
+import { runNow, resetBreaker } from "./ops-actions";
 import { SentimentChart, VolumeChart, type SentimentPoint, type VolumePoint } from "../../../../components/charts";
 
 export const dynamic = "force-dynamic";
@@ -87,6 +88,9 @@ export default async function MonitorDashboard({ params }: { params: Promise<{ i
         <h1>{monitor.name}</h1>
         <span className={`pill ${monitor.status === "active" ? "ok" : "idle"}`}>{monitor.status}</span>
         <div className="spacer" />
+        <form action={runNow.bind(null, id)} style={{ display: "inline" }}>
+          <button type="submit">Run now</button>
+        </form>
         <Link className="btn" href={`/monitors/${id}/ask`}>Ask</Link>
         <Link className="btn" href={`/monitors/${id}/items`}>Items</Link>
         <Link className="btn" href={`/monitors/${id}/summaries`}>Summaries</Link>
@@ -168,7 +172,12 @@ export default async function MonitorDashboard({ params }: { params: Promise<{ i
               <tbody>
                 {streams.map((s) => {
                   const state = s.breaker_tripped_at
-                    ? <span className="pill err">breaker</span>
+                    ? (
+                        <form action={resetBreaker.bind(null, id, s.source, s.stream)} style={{ display: "inline" }}>
+                          <span className="pill err">breaker</span>{" "}
+                          <button type="submit" style={{ padding: "1px 8px", fontSize: 11 }}>Reset</button>
+                        </form>
+                      )
                     : s.consecutive_failures > 0
                       ? <span className="pill warn">{s.consecutive_failures} fail(s)</span>
                       : <span className="pill ok">ok</span>;

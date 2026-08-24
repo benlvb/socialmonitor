@@ -24,7 +24,7 @@ the web app; the worker and cron run themselves.
 ## When things go wrong (top 5)
 | Failure | Signal | Response |
 |---|---|---|
-| Stream breaker tripped | `breaker` pill + Telegram alert | Cause is in the event message (revoked key, deleted channel, kicked bot). Fix it, then in Supabase SQL editor: `update sync_streams set breaker_tripped_at=null, consecutive_failures=0 where monitor_id='…' and stream='…';` |
+| Stream breaker tripped | `breaker` pill + Telegram alert | Cause is in the event message (revoked key, deleted channel, kicked bot). Fix it, then hit **Reset** next to the breaker pill in Pipeline health — clears the breaker and retries the fetch immediately (SQL fallback still works) |
 | Monthly LLM cap hit | `budget_paused` alert; /ask answers with a cap message | Deliberate stop (D13). Fetching continued. Raise `GLOBAL_MONTHLY_LLM_CAP_USD` on Railway+Vercel or wait for month rollover; the backlog classifies itself. |
 | Discord silently dead | `canary_message_content` alert | Discord dev portal → Bot → re-enable MESSAGE_CONTENT intent. No data was ever acknowledged as read: cursors held. |
 | Classify batches produce nothing | `mass_failure` alert | Almost always the Anthropic key (expired/rate-limited) or a schema change mid-flight. Railway logs name the batch id. |
