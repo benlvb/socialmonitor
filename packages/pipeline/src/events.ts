@@ -20,7 +20,6 @@ const ALERT_KINDS = new Set([
   "budget_paused",
   "mass_failure",
   "canary_message_content",
-  "drift_detected",
   "summary_truncated",
 ]);
 
@@ -41,6 +40,9 @@ export async function logEvent(sql: Db | null, e: PipelineEvent): Promise<void> 
   }
 
   if (e.level === "error" || ALERT_KINDS.has(e.kind)) {
-    await notify(`${e.kind}\n${e.message}${e.source ? `\nsource: ${e.source}` : ""}${e.stream ? ` stream: ${e.stream}` : ""}`);
+    await notify(
+      `${e.kind}\n${e.message}${e.source ? `\nsource: ${e.source}` : ""}${e.stream ? ` stream: ${e.stream}` : ""}`,
+      sql,
+    );
   }
 }

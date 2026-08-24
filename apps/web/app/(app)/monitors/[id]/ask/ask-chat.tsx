@@ -22,10 +22,11 @@ export function AskChat({ monitorId }: { monitorId: string }) {
   const [approval, setApproval] = useState<{
     calls: { name: string; args: unknown }[];
     pendingTurn: unknown[];
+    sig: string;
   } | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
 
-  async function send(history: ChatMessage[], approvedTurn?: unknown[]) {
+  async function send(history: ChatMessage[], approvedTurn?: unknown[], sig?: string) {
     setPending(true);
     setApproval(null);
     try {
@@ -36,6 +37,7 @@ export function AskChat({ monitorId }: { monitorId: string }) {
           monitorId,
           approveTools: Boolean(approvedTurn),
           pendingTurn: approvedTurn,
+          pendingTurnSig: sig,
           messages: history.map((m) => ({ role: m.role, content: m.content })),
         }),
       });
@@ -45,9 +47,14 @@ export function AskChat({ monitorId }: { monitorId: string }) {
         toolCalls?: ChatMessage["toolCalls"];
         needsApproval?: { name: string; args: unknown }[];
         pendingTurn?: unknown[];
+        pendingTurnSig?: string;
       };
       if (data.needsApproval && data.pendingTurn) {
-        setApproval({ calls: data.needsApproval, pendingTurn: data.pendingTurn });
+        setApproval({
+          calls: data.needsApproval,
+          pendingTurn: data.pendingTurn,
+          sig: data.pendingTurnSig ?? "",
+        });
         return;
       }
       setMessages([
@@ -120,7 +127,7 @@ export function AskChat({ monitorId }: { monitorId: string }) {
               ))}
             </p>
             <div className="row">
-              <button className="primary" onClick={() => void send(messages, approval.pendingTurn)}>
+              <button className="primary" onClick={() => void send(messages, approval.pendingTurn, approval.sig)}>
                 Approve &amp; continue
               </button>
               <button onClick={() => setApproval(null)}>Cancel</button>

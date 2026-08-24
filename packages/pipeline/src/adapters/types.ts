@@ -39,6 +39,8 @@ export interface FetchResult {
  */
 export interface SourceAdapter {
   readonly source: Source;
+  /** Only external_ids with this prefix are due for metrics refresh (audit #18). */
+  readonly metricsRefPrefix?: string;
   status(sql: Db, ownerId: string): Promise<AdapterStatus>;
   testConnection(sql: Db, ownerId: string): Promise<{ ok: boolean; message: string }>;
   streams(monitor: MonitorRow, targets: TargetRow[]): StreamDef[];

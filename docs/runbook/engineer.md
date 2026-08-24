@@ -70,5 +70,6 @@ against real credentials (expect field drift vs fixtures — that trade-off is D
 
 ## Known deferred items (v2 parking lot)
 Authors/spikes dashboard · review queue · Slack notifier · official X API adapter ·
+channel-drift detection · /ask streaming · transcripts toggle ·
 embedding-based cross-source
 clustering · multi-tenant signup/billing.

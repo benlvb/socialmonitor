@@ -45,12 +45,13 @@ function parseFixture(monitorId: string, stream: string, m: TgFixtureMessage): R
   };
 }
 
-// GramJS client cache (one per process).
-let clientPromise: Promise<unknown> | null = null;
+// GramJS client cache, keyed by credentials so a rotated session takes effect.
+let clientCache: { key: string; promise: Promise<unknown> } | null = null;
 
 async function getClient(creds: Credentials): Promise<any> {
-  if (!clientPromise) {
-    clientPromise = (async () => {
+  const cacheKey = `${creds.TELEGRAM_MTPROTO_API_ID}:${(creds.TELEGRAM_MTPROTO_SESSION ?? "").slice(-16)}`;
+  if (!clientCache || clientCache.key !== cacheKey) {
+    const promise = (async () => {
       const { TelegramClient } = await import("telegram");
       const { StringSession } = await import("telegram/sessions/index.js");
       const client = new TelegramClient(
@@ -62,11 +63,12 @@ async function getClient(creds: Credentials): Promise<any> {
       await client.connect();
       return client;
     })().catch((err) => {
-      clientPromise = null;
+      clientCache = null;
       throw new TransientError(`telegram connect failed: ${String(err)}`);
     });
+    clientCache = { key: cacheKey, promise };
   }
-  return clientPromise;
+  return clientCache.promise;
 }
 
 export const telegramAdapter: SourceAdapter = {

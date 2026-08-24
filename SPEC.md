@@ -22,7 +22,7 @@ This file — not the original documents — is the source of truth.
 | D6 | YouTube: `videos` + `comments` streams (comments only on videos ≤ 7 days old), keyword search budgeted per monitor (search = 100 quota units; everything else ≈ 1). |
 | D7 | Reddit: `subreddit_posts`, `keyword_search`, `user_posts`, `comments` (posts ≤ 3 days, depth 1, parent post as classifier context). |
 | D8 | Telegram via MTProto user client (GramJS) on a **dedicated** account; public channels/groups by username. Bot API adapter possible later for private groups. |
-| D9 | Discord: bot REST polling, snowflake cursors, forward-only first sync, channel-drift detection, MESSAGE_CONTENT silent-death canary. |
+| D9 | Discord: bot REST polling, per-channel snowflake cursors, forward-only first sync, MESSAGE_CONTENT silent-death canary (channel-drift detection: v2). |
 | D10 | Stack: TypeScript pnpm monorepo — `apps/web` (Next.js on Vercel), `packages/pipeline` (worker on Railway), `packages/db`, `packages/shared`. Supabase Postgres. |
 | D11 | Queue-first: `pg_cron` producer → **pgmq** → stateless worker pool. Job unit = `(monitor_id, source, stream)`. Per-owner concurrency caps. Raw items partitioned monthly. |
 | D12 | LLM: Anthropic-only v1 — Haiku 4.5 (Batch API) for classification, Sonnet 5 for `/ask` + weekly summary — behind provider-agnostic `classify()`; model per monitor is config. Verify current model IDs/API shapes against the API reference at build time; never trust the reference docs' IDs. |
@@ -346,8 +346,7 @@ Per-source notes (v1):
   Conservative global rate limit; session string in Vault.
 - **discord** (bot token): `channel/<id>` via REST `?after=snowflake`. Forward-only first
   sync; reply-chain backfill depth 3 into `context`; linear neighbors (12 msgs / 90 min)
-  computed at classify time from raw_items. Drift detection (expected vs actual channel
-  names) and the MESSAGE_CONTENT canary: N consecutive syncs where >0 messages all have
+  computed at classify time from raw_items. The MESSAGE_CONTENT canary: N consecutive syncs where >0 messages all have
   empty content ⇒ `canary_message_content` event + alert.
 
 Fixture mode (D22): each adapter has `fixtures/*.json` of realistic payloads; a
@@ -378,8 +377,8 @@ Prompt assembly (order is load-bearing for caching):
 4. Source context (reply chain / parent post / neighbors / channel name), defanged.
 5. The item, defanged (`---`/`===`/[Headers] rewritten).
 
-Prefix cached with `cache_control` split at the marker; note Haiku's minimum cacheable
-prefix (~4096 tokens) — measure, and if a monitor's prefix is below minimum, caching
+Prefix cached with `cache_control` split at the marker; note the minimum cacheable
+prefix (~1024 tokens) — measure, and if a monitor's prefix is below minimum, caching
 silently no-ops (acceptable).
 
 Execution: pre-filter (heuristics: empty/too-short, pure links, bot/self posts,
@@ -416,7 +415,7 @@ schema-invalid results retried once then dropped as PerItemError; usage recorded
   per monitor): `monitor_pulse(days)`, `top_themes(signal_type?, days?, limit?, sources?)`,
   `volume_trend(days?, granularity?)`, `drilldown_items(source, signal_type, descriptions)`.
   Tools are parameterized queries; ints clamped; strings bound; row/char caps. Tool calls +
-  results rendered inline. Streaming UI.
+  results rendered inline. Non-streaming request/response v1 (streaming: v2).
 - **Summaries**: weekly summary per (monitor, week); markdown render; history.
 
 ## 8. Weekly summary & notifier

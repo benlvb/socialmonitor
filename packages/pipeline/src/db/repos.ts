@@ -108,8 +108,10 @@ export async function markStreamFailure(
   const inc = errorKind === "systemic" ? 1 : 0;
   const rows = await sql`
     insert into sync_streams
-      (monitor_id, source, stream, consecutive_failures, last_run_at, updated_at)
-    values (${monitorId}, ${source}, ${stream}, ${inc}, now(), now())
+      (monitor_id, source, stream, cursor, cursor_meta, rows_total,
+       consecutive_failures, breaker_tripped_at, last_run_at, last_success_at, updated_at)
+    values (${monitorId}, ${source}, ${stream}, null, ${"{}"}::jsonb, 0,
+            ${inc}, null, now(), null, now())
     on conflict (monitor_id, source, stream) do update set
       consecutive_failures = sync_streams.consecutive_failures + ${inc},
       breaker_tripped_at = case
@@ -264,57 +266,95 @@ export interface ThemeMergeInput {
 }
 
 const MAX_ITEM_REFS = 50;
+const MAX_AUTHOR_SAMPLE = 200;
 
 /**
- * Merge one classified item into its theme row inside a transaction.
- * author_count = DISTINCT authors (the ranking metric, D-Discord rule).
+ * Recompute a theme row from item_classifications ⋈ raw_items (audits #17, #20):
+ * counts are always truthful (corrections included), author_count is a real
+ * DISTINCT over items, and there is no O(n²) unbounded-array rewrite.
+ * Deletes the row when no relevant items remain.
  */
-export async function mergeTheme(sql: Db, m: ThemeMergeInput): Promise<void> {
+export async function recomputeTheme(
+  sql: Db,
+  monitorId: string,
+  source: Source,
+  signalType: string,
+  description: string,
+  addTags: string[] = [],
+): Promise<void> {
   await sql.begin(async (tx) => {
-    const existing = await tx`
-      select tags, score_avg, item_count, author_count, authors, item_refs, first_seen
-      from themes
-      where monitor_id = ${m.monitorId} and source = ${m.source}
-        and signal_type = ${m.signalType} and description = ${m.description}
-      for update`;
-    const today = new Date().toISOString().slice(0, 10);
-    if (existing.length === 0) {
+    const stats = await tx`
+      select count(*)::int as items,
+             count(distinct coalesce(nullif(r.author_handle, ''), r.author_id))::int as authors,
+             round(avg(c.score)::numeric, 2) as score_avg,
+             min(r.posted_at)::date as first_seen,
+             max(r.posted_at)::date as last_seen
+      from item_classifications c
+      join raw_items r on r.monitor_id = c.monitor_id and r.source = c.source and r.external_id = c.external_id
+      where c.monitor_id = ${monitorId} and c.source = ${source}
+        and c.signal_type = ${signalType} and c.description = ${description} and c.relevant`;
+    const s = stats[0]!;
+    if (Number(s.items) === 0) {
       await tx`
-        insert into themes
-          (monitor_id, source, signal_type, description, tags, score_avg, item_count,
-           author_count, authors, item_refs, first_seen, last_seen, updated_at)
-        values
-          (${m.monitorId}, ${m.source}, ${m.signalType}, ${m.description},
-           ${m.tags.slice(0, 3)}, ${m.score}, 1, 1, ${[m.author]},
-           ${tx.json([m.itemRef] as never)}, ${today}, ${today}, now())`;
+        delete from themes
+        where monitor_id = ${monitorId} and source = ${source}
+          and signal_type = ${signalType} and description = ${description}`;
       return;
     }
-    const e = existing[0]!;
-    const oldCount = Number(e.item_count);
-    const newCount = oldCount + 1;
-    const oldAvg = e.score_avg == null ? null : Number(e.score_avg);
-    const newAvg =
-      m.score == null
-        ? oldAvg
-        : oldAvg == null
-          ? m.score
-          : Math.round(((oldAvg * oldCount + m.score) / newCount) * 100) / 100;
-    const mergedTags = [...new Set([...(e.tags as string[]), ...m.tags])].slice(0, 3);
-    const authors = [...new Set([...(e.authors as string[]), m.author].filter(Boolean))];
-    const refs = [...(e.item_refs as unknown[]), m.itemRef].slice(-MAX_ITEM_REFS);
+    const refs = await tx`
+      select r.external_id as "externalId", r.url,
+             coalesce(nullif(r.author_handle, ''), r.author_id) as author,
+             r.posted_at as "postedAt"
+      from item_classifications c
+      join raw_items r on r.monitor_id = c.monitor_id and r.source = c.source and r.external_id = c.external_id
+      where c.monitor_id = ${monitorId} and c.source = ${source}
+        and c.signal_type = ${signalType} and c.description = ${description} and c.relevant
+      order by r.posted_at desc limit ${MAX_ITEM_REFS}`;
+    const authorRows = await tx`
+      select distinct coalesce(nullif(r.author_handle, ''), r.author_id) as a
+      from item_classifications c
+      join raw_items r on r.monitor_id = c.monitor_id and r.source = c.source and r.external_id = c.external_id
+      where c.monitor_id = ${monitorId} and c.source = ${source}
+        and c.signal_type = ${signalType} and c.description = ${description} and c.relevant
+      limit ${MAX_AUTHOR_SAMPLE}`;
+    const existing = await tx`
+      select tags from themes
+      where monitor_id = ${monitorId} and source = ${source}
+        and signal_type = ${signalType} and description = ${description}`;
+    const mergedTags = [
+      ...new Set([...(((existing[0]?.tags as string[]) ?? [])), ...addTags]),
+    ].slice(0, 3);
+    const itemRefs = refs.map((x) => ({
+      externalId: x.externalId as string,
+      url: (x.url as string) ?? "",
+      author: (x.author as string) ?? "",
+      postedAt: x.postedAt ? new Date(x.postedAt as Date).toISOString() : "",
+    }));
     await tx`
-      update themes set
-        tags = ${mergedTags},
-        score_avg = ${newAvg},
-        item_count = ${newCount},
-        author_count = ${authors.length},
-        authors = ${authors},
-        item_refs = ${tx.json(refs as never)},
-        last_seen = ${today},
-        updated_at = now()
-      where monitor_id = ${m.monitorId} and source = ${m.source}
-        and signal_type = ${m.signalType} and description = ${m.description}`;
+      insert into themes
+        (monitor_id, source, signal_type, description, tags, score_avg, item_count,
+         author_count, authors, item_refs, first_seen, last_seen, updated_at)
+      values
+        (${monitorId}, ${source}, ${signalType}, ${description}, ${mergedTags},
+         ${s.score_avg}, ${s.items}, ${s.authors},
+         ${authorRows.map((x) => x.a as string)}, ${tx.json(itemRefs as never)},
+         ${s.first_seen}, ${s.last_seen}, now())
+      on conflict (monitor_id, source, signal_type, description) do update set
+        tags = excluded.tags,
+        score_avg = excluded.score_avg,
+        item_count = excluded.item_count,
+        author_count = excluded.author_count,
+        authors = excluded.authors,
+        item_refs = excluded.item_refs,
+        first_seen = excluded.first_seen,
+        last_seen = excluded.last_seen,
+        updated_at = now()`;
   });
+}
+
+/** Merge one classified item into its theme — now a truthful recompute. */
+export async function mergeTheme(sql: Db, m: ThemeMergeInput): Promise<void> {
+  await recomputeTheme(sql, m.monitorId, m.source, m.signalType, m.description, m.tags);
 }
 
 export async function recordUsage(
@@ -324,21 +364,24 @@ export async function recordUsage(
   inputTokens: number,
   outputTokens: number,
   costUsd: number,
+  classifyCalls = 0,
 ): Promise<void> {
   await sql`
-    insert into llm_usage (monitor_id, day, calls, input_tokens, output_tokens, cost_usd)
-    values (${monitorId}, current_date, ${calls}, ${inputTokens}, ${outputTokens}, ${costUsd})
+    insert into llm_usage (monitor_id, day, calls, classify_calls, input_tokens, output_tokens, cost_usd)
+    values (${monitorId}, current_date, ${calls}, ${classifyCalls}, ${inputTokens}, ${outputTokens}, ${costUsd})
     on conflict (monitor_id, day) do update set
       calls = llm_usage.calls + ${calls},
+      classify_calls = llm_usage.classify_calls + ${classifyCalls},
       input_tokens = llm_usage.input_tokens + ${inputTokens},
       output_tokens = llm_usage.output_tokens + ${outputTokens},
       cost_usd = llm_usage.cost_usd + ${costUsd}`;
 }
 
+/** Classification budget input (audit #14): /ask and summaries must not consume it. */
 export async function getTodayCalls(sql: Db, monitorId: string): Promise<number> {
   const rows = await sql`
-    select calls from llm_usage where monitor_id = ${monitorId} and day = current_date`;
-  return rows.length ? Number(rows[0]!.calls) : 0;
+    select classify_calls from llm_usage where monitor_id = ${monitorId} and day = current_date`;
+  return rows.length ? Number(rows[0]!.classify_calls) : 0;
 }
 
 export async function getMonthCostUsd(sql: Db): Promise<number> {
@@ -416,15 +459,20 @@ export async function getDueMetricsRefs(
   source: Source,
   checkpoint: "1h" | "24h" | "7d",
   limit = 100,
+  refPrefix?: string,
 ): Promise<DueMetricsRef[]> {
   const age =
     checkpoint === "1h" ? "1 hour" : checkpoint === "24h" ? "24 hours" : "7 days";
+  // refPrefix keeps refs the adapter cannot refresh (e.g. youtube comments)
+  // from permanently starving the ones it can (audit #18).
+  const likePattern = refPrefix ? refPrefix + "%" : null;
   return (await sql`
     select r.external_id, r.url, r.author_handle, r.posted_at
     from raw_items r
     join item_classifications c
       on c.monitor_id = r.monitor_id and c.source = r.source and c.external_id = r.external_id
     where r.monitor_id = ${monitorId} and r.source = ${source}
+      and (${likePattern}::text is null or r.external_id like ${likePattern})
       and c.relevant
       and r.posted_at <= now() - ${age}::interval
       and r.posted_at > now() - interval '8 days'

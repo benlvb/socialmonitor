@@ -106,15 +106,19 @@ export async function testIntegration(
       if (!sql) return { error: "DATABASE_URL not configured on the web app." };
       result = await getAdapter(source).testConnection(sql, user.id);
     } else if (integration === "anthropic") {
-      const key = process.env.ANTHROPIC_API_KEY;
-      result = key
-        ? { ok: true, message: "ANTHROPIC_API_KEY present" }
-        : { ok: false, message: "ANTHROPIC_API_KEY not set" };
+      // Vault-aware (audit #7): the saved key counts, not just env.
+      const { resolveCredentials } = await import("@socialmonitor/pipeline/adapters");
+      const creds = await resolveCredentials(sql, user.id, "anthropic");
+      result = creds?.ANTHROPIC_API_KEY
+        ? { ok: true, message: "Anthropic key configured (vault or env)" }
+        : { ok: false, message: "no Anthropic key in vault or env" };
     } else {
-      // telegram_notify
-      const token = process.env.TELEGRAM_NOTIFY_BOT_TOKEN;
+      // telegram_notify — vault-aware
+      const { resolveCredentials } = await import("@socialmonitor/pipeline/adapters");
+      const creds = await resolveCredentials(sql, user.id, "telegram_notify");
+      const token = creds?.TELEGRAM_NOTIFY_BOT_TOKEN;
       if (!token) {
-        result = { ok: false, message: "TELEGRAM_NOTIFY_BOT_TOKEN not set" };
+        result = { ok: false, message: "notifier bot token not configured (vault or env)" };
       } else {
         const res = await fetch(`https://api.telegram.org/bot${token}/getMe`, {
           signal: AbortSignal.timeout(15_000),

@@ -175,7 +175,8 @@ the fields that matter most:
   "budgets":  { "daily_classifications": 500, "youtube_searches_per_day": 20, "x_reads_per_day": 2000 },
   "cadence_minutes": { "fetch": 30, "classify": 30, "metrics": 15 },
   "toggles":  { "youtube_videos": true, "youtube_comments": true, "reddit_comments": true,
-                "transcripts": false, "ask_tool_approval": false },
+                "transcripts": false,   // reserved (v2) — not implemented yet
+                "ask_tool_approval": false },
   "prefilter": { "min_chars": 8, "mute_patterns": ["giveaway"] },  // free filters before any LLM call
   "model": {}   // per-monitor overrides, e.g. {"classify": "claude-sonnet-5"}
 }

@@ -102,7 +102,7 @@ export async function runWeeklySummary(sql: Db, monitor: MonitorRow): Promise<vo
     return;
   }
 
-  const client = createAnthropic();
+  const client = await createAnthropic(sql, monitor.owner_id);
   if (!client) {
     await logEvent(sql, {
       monitorId: monitor.id,
@@ -204,6 +204,7 @@ ${JSON.stringify(data, null, 2)}`;
   try {
     await notify(
       `📊 Weekly summary — ${monitor.name} (week of ${weekKey})\n\n${markdown.slice(0, 3500)}${markdown.length > 3500 ? "\n…(full summary on the dashboard)" : ""}`,
+      sql,
     );
   } catch (err) {
     console.error("[summary] notify failed", err);

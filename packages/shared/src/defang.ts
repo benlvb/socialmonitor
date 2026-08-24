@@ -4,8 +4,8 @@
  */
 export function defangPromptMarkers(text: string): string {
   return (text ?? "")
-    .replace(/^---+/gm, "—")
-    .replace(/^===+/gm, "≡")
+    .replace(/^[ \t]*---+/gm, "—")
+    .replace(/^[ \t]*===+/gm, "≡")
     .replace(/^\[([A-Z][A-Za-z /_-]+)\]$/gm, "($1)");
 }
 

@@ -1,9 +1,11 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createDb } from "@socialmonitor/db";
 import { parseMonitorConfig } from "@socialmonitor/shared";
 import { getMonthCostUsd, recordUsage } from "@socialmonitor/pipeline/repos";
+import { resolveCredentials } from "@socialmonitor/pipeline/adapters";
 import { DEFAULT_NARRATE_MODEL, estimateCostUsd } from "@socialmonitor/pipeline/llm";
 import { createClient } from "../../../lib/supabase/server";
 import { isAllowedEmail } from "../../../lib/allowlist";
@@ -32,8 +34,27 @@ const BodySchema = z.object({
     .max(80),
   approveTools: z.boolean().optional(),
   /** The paused assistant turn (content blocks) being approved — round-trips verbatim. */
-  pendingTurn: z.array(z.record(z.string(), z.unknown())).optional(),
+  pendingTurn: z.array(z.record(z.string(), z.unknown())).max(20).optional(),
+  /** HMAC over the pending turn — proves this server produced it (audit #13). */
+  pendingTurnSig: z.string().max(128).optional(),
 });
+
+const SIGN_SECRET =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.ANTHROPIC_API_KEY ?? "socialmonitor-dev";
+
+function signTurn(monitorId: string, turn: unknown): string {
+  return createHmac("sha256", SIGN_SECRET)
+    .update(monitorId + JSON.stringify(turn))
+    .digest("hex");
+}
+
+function verifyTurnSig(monitorId: string, turn: unknown, sig: string | undefined): boolean {
+  if (!sig) return false;
+  const expected = signTurn(monitorId, turn);
+  const a = Buffer.from(expected, "hex");
+  const b = Buffer.from(sig.length === expected.length ? sig : "", "hex");
+  return a.length === b.length && a.length > 0 && timingSafeEqual(a, b);
+}
 
 interface ToolCallRecord {
   name: string;
@@ -71,17 +92,21 @@ export async function POST(request: Request): Promise<NextResponse> {
     .single();
   if (!monitor) return NextResponse.json({ error: "monitor not found" }, { status: 404 });
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return NextResponse.json({
-      reply:
-        "The Anthropic API key isn't configured yet — plug it in on the Connections page to activate /ask.",
-      toolCalls: [],
-    });
-  }
   const sql = createDb();
   if (!sql) return NextResponse.json({ error: "DATABASE_URL not configured" }, { status: 500 });
 
   try {
+    // Vault-aware (audit #7): the Connections page key works without env vars.
+    const anthropicCreds = await resolveCredentials(sql, user.id, "anthropic");
+    const apiKey = anthropicCreds?.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json({
+        reply:
+          "The Anthropic API key isn't configured yet — plug it in on the Connections page to activate /ask.",
+        toolCalls: [],
+      });
+    }
+
     const monthCost = await getMonthCostUsd(sql);
     if (monthCost >= GLOBAL_CAP_USD) {
       return NextResponse.json({
@@ -117,7 +142,7 @@ data genuinely can't answer, say so — never invent items, counts, or quotes.
 PRECOMPUTED DIGEST (30d unless noted):
 ${JSON.stringify(digest)}`;
 
-    const client = new Anthropic();
+    const client = new Anthropic({ apiKey });
     const model = config.model.narrate || process.env.NARRATE_MODEL || DEFAULT_NARRATE_MODEL;
 
     // History: cap, then trim so the first retained message is a user turn —
@@ -168,8 +193,12 @@ ${JSON.stringify(digest)}`;
     };
 
     // Approved resume: replay the paused assistant turn verbatim and execute
-    // exactly the tool calls the user saw (F8 — the gate must be binding).
+    // exactly the tool calls the user saw. The HMAC proves the turn came from
+    // this server, not from arbitrary client JSON (audit #13).
     if (body.approveTools && body.pendingTurn) {
+      if (!verifyTurnSig(monitor.id, body.pendingTurn, body.pendingTurnSig)) {
+        return NextResponse.json({ error: "invalid approval token" }, { status: 400 });
+      }
       const pending = body.pendingTurn as unknown as Anthropic.ContentBlockParam[];
       messages.push({ role: "assistant", content: pending });
       const toolUses = pending.filter(
@@ -218,14 +247,16 @@ ${JSON.stringify(digest)}`;
         });
       }
 
-      if (gateEnabled && !body.approveTools) {
+      if (gateEnabled) {
+        // Pause EVERY round (audit #13): an approval covers exactly one turn —
+        // the approved turn executed above, and any new tool call pauses again.
         await finishUsage();
-        // Pause: hand the exact assistant turn back for approval.
         return NextResponse.json({
           reply: "",
           toolCalls,
           needsApproval: toolUses.map((t) => ({ name: t.name, args: t.input })),
           pendingTurn: response.content,
+          pendingTurnSig: signTurn(monitor.id, response.content),
         });
       }
 

@@ -1,6 +1,6 @@
 import { TransientError, SystemicError, errorFromStatus, type ItemRef, type MetricsRow, type RawItem } from "@socialmonitor/shared";
 import type { Db } from "@socialmonitor/db";
-import type { MonitorRow, TargetRow } from "../db/repos";
+import { getStreamState, updateStreamMeta, type MonitorRow, type TargetRow } from "../db/repos";
 import type { FetchContext, FetchResult, SourceAdapter, StreamDef } from "./types";
 import { resolveCredentials } from "./credentials";
 import { fixtureMode, loadFixture } from "./fixtures";
@@ -87,12 +87,20 @@ async function apiGet(key: string, pathname: string, params: Record<string, stri
   return res.json();
 }
 
-async function readsToday(sql: Db, monitorId: string): Promise<number> {
-  const rows = await sql`
-    select count(*) as n from raw_items
-    where monitor_id = ${monitorId} and source = 'x'
-      and fetched_at >= date_trunc('day', now())`;
-  return Number(rows[0]!.n);
+/**
+ * Daily API-read budget (audit #15): counts actual API calls in stream meta —
+ * stored-row counts cannot cap spend (duplicates store nothing) and were
+ * checked only once per run instead of per page.
+ */
+async function takeReadBudget(sql: Db, monitor: MonitorRow): Promise<boolean> {
+  const stream = "xreads_budget";
+  const state = await getStreamState(sql, monitor.id, "x", stream);
+  const meta = (state?.cursor_meta ?? {}) as { day?: string; count?: number };
+  const today = new Date().toISOString().slice(0, 10);
+  const count = meta.day === today ? (meta.count ?? 0) : 0;
+  if (count >= monitor.config.budgets.x_reads_per_day) return false;
+  await updateStreamMeta(sql, monitor.id, "x", stream, { day: today, count: count + 1 });
+  return true;
 }
 
 export const xAdapter: SourceAdapter = {
@@ -124,7 +132,12 @@ export const xAdapter: SourceAdapter = {
     const out: StreamDef[] = [];
     for (const t of targets) {
       if (t.kind === "keyword") out.push({ stream: `search/${t.id}`, target: t });
-      if (t.kind === "account") out.push({ stream: `account/${t.id}`, target: t });
+      if (t.kind === "account") {
+        out.push({ stream: `account/${t.id}`, target: t });
+        // Un-gated mention stream (SPEC: keyword-gated queries miss ~30% of
+        // actionable mentions because users don't use your vocabulary).
+        out.push({ stream: `mentions/${t.id}`, target: t });
+      }
     }
     return out;
   },
@@ -149,17 +162,14 @@ export const xAdapter: SourceAdapter = {
       return { items: [], nextCursor: String(Math.floor(Date.now() / 1000)) };
     }
 
-    // Per-monitor read budget (D13): fetched items today vs x_reads_per_day.
-    const used = await readsToday(sql, monitor.id);
-    const budget = monitor.config.budgets.x_reads_per_day;
-    if (used >= budget) {
-      console.log(`[x] ${monitor.name}: read budget spent (${used}/${budget})`);
-      return { items: [], nextCursor: null };
-    }
-
     const target = stream.target!;
-    let query = target.kind === "account" ? `from:${target.value}` : target.value;
-    if (cursor) query += ` since_time:${cursor}`;
+    const isMentions = stream.stream.startsWith("mentions/");
+    let query = isMentions
+      ? `@${target.value.replace(/^@/, "")}`
+      : target.kind === "account"
+        ? `from:${target.value}`
+        : target.value;
+    query += ` since_time:${cursor}`;
 
     const items: RawItem[] = [];
     let dropped = 0;
@@ -167,6 +177,11 @@ export const xAdapter: SourceAdapter = {
     const maxPages = monitor.config.limits.max_pages_per_fetch;
 
     for (let page = 0; page < maxPages; page++) {
+      // Budget check per API call, not per run (audit #15).
+      if (!(await takeReadBudget(sql, monitor))) {
+        console.log(`[x] ${monitor.name}: daily API read budget spent`);
+        break;
+      }
       const params: Record<string, string> = { query, queryType: "Latest" };
       if (pageCursor) params.cursor = pageCursor;
       const data = (await apiGet(

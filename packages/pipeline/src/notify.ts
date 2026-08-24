@@ -1,7 +1,11 @@
 /**
  * Channel-agnostic notifier (D19). Telegram implementation in v1; Slack later.
- * Template-first: missing credentials degrade to console logging, never throw.
+ * Vault-aware (audit #7): env vars are the bootstrap path; a telegram_notify
+ * row saved on the Connections page also works, no deploy needed.
+ * Missing credentials degrade to console logging, never throw.
  */
+import type { Db } from "@socialmonitor/db";
+
 export interface Notifier {
   send(text: string): Promise<void>;
 }
@@ -31,18 +35,42 @@ class ConsoleNotifier implements Notifier {
   }
 }
 
-function buildNotifier(): Notifier {
-  const token = process.env.TELEGRAM_NOTIFY_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_NOTIFY_CHAT_ID;
-  if (token && chatId) return new TelegramNotifier(token, chatId);
+let cached: { key: string; notifier: Notifier } | null = null;
+
+async function resolveNotifier(sql: Db | null): Promise<Notifier> {
+  let token = process.env.TELEGRAM_NOTIFY_BOT_TOKEN;
+  let chatId = process.env.TELEGRAM_NOTIFY_CHAT_ID;
+
+  if ((!token || !chatId) && sql) {
+    try {
+      // Single-operator: first configured telegram_notify credential wins.
+      const rows = await sql`
+        select vs.decrypted_secret
+        from source_credentials sc
+        join vault.decrypted_secrets vs on vs.id = sc.vault_secret_id
+        where sc.source = 'telegram_notify' and sc.vault_secret_id is not null
+        limit 1`;
+      if (rows[0]?.decrypted_secret) {
+        const secret = JSON.parse(rows[0].decrypted_secret as string) as Record<string, string>;
+        token = token || secret.TELEGRAM_NOTIFY_BOT_TOKEN;
+        chatId = chatId || secret.TELEGRAM_NOTIFY_CHAT_ID;
+      }
+    } catch (err) {
+      console.warn("[notify] vault lookup failed, using console", err);
+    }
+  }
+
+  if (token && chatId) {
+    const key = `${token.slice(-8)}:${chatId}`;
+    if (cached?.key !== key) cached = { key, notifier: new TelegramNotifier(token, chatId) };
+    return cached.notifier;
+  }
   return new ConsoleNotifier();
 }
 
-let notifier: Notifier | null = null;
-
-export async function notify(text: string): Promise<void> {
-  notifier ??= buildNotifier();
+export async function notify(text: string, sql?: Db | null): Promise<void> {
   try {
+    const notifier = await resolveNotifier(sql ?? null);
     await notifier.send(`socialmonitor\n${text}`);
   } catch (err) {
     console.error("[notify] failed", err);

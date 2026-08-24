@@ -146,6 +146,7 @@ async function takeSearchBudget(sql: Db, monitor: MonitorRow): Promise<boolean> 
 
 export const youtubeAdapter: SourceAdapter = {
   source: "youtube",
+  metricsRefPrefix: "video:", // comments have no refreshable stats (audit #18)
 
   async status(sql, ownerId) {
     if (fixtureMode()) return { configured: true, detail: "fixture mode" };

@@ -74,9 +74,23 @@ export async function runJob(sql: Db, job: JobPayload): Promise<void> {
   }
 
   if (job.kind === "metrics") {
-    await withStreamLock(sql, `${monitor.id}:${source}`, "metrics_refresh", () =>
-      runMetricsRefresh(sql, monitor, adapter, source),
-    );
+    // Own error boundary (audit #18): a metrics failure must not poison the
+    // queue message; it logs, holds, and retries on the next cadence tick.
+    try {
+      await withStreamLock(sql, `${monitor.id}:${source}`, "metrics_refresh", () =>
+        runMetricsRefresh(sql, monitor, adapter, source),
+      );
+    } catch (err) {
+      await markStreamFailure(sql, monitor.id, source, "metrics_refresh", "transient");
+      await logEvent(sql, {
+        monitorId: monitor.id,
+        source,
+        stream: "metrics_refresh",
+        level: "warn",
+        kind: "run_failed",
+        message: `metrics refresh failed: ${String(err).slice(0, 300)}`,
+      });
+    }
   }
 }
 
@@ -182,7 +196,7 @@ async function runMetricsRefresh(
   const checkpoints = monitor.config.limits.metrics_checkpoints;
   for (const checkpoint of METRIC_CHECKPOINTS) {
     if (!checkpoints.includes(checkpoint)) continue;
-    const due = await getDueMetricsRefs(sql, monitor.id, source, checkpoint);
+    const due = await getDueMetricsRefs(sql, monitor.id, source, checkpoint, 100, adapter.metricsRefPrefix);
     if (due.length === 0) continue;
     const rows = await adapter.refreshMetrics(
       sql,

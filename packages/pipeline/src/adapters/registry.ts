@@ -25,4 +25,6 @@ export function registerAdapter(adapter: SourceAdapter): void {
   registry.set(adapter.source, adapter);
 }
 
+export { resolveCredentials } from "./credentials";
+
 export type { Db };

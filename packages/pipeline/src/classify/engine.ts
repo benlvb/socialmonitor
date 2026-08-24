@@ -60,7 +60,7 @@ export async function runClassify(sql: Db, monitor: MonitorRow, source: Source):
   const meta = (state?.cursor_meta ?? {}) as ClassifyMeta;
   let attempts: Record<string, number> = { ...(meta.attempts ?? {}) };
 
-  const client = createAnthropic();
+  const client = await createAnthropic(sql, monitor.owner_id);
   const fixtureMode = process.env.FIXTURE_MODE === "1";
 
   // Phase A: collect a pending batch if one exists.
@@ -218,7 +218,7 @@ async function collectAndWrite(
   sql: Db,
   monitor: MonitorRow,
   source: Source,
-  client: NonNullable<ReturnType<typeof createAnthropic>>,
+  client: NonNullable<Awaited<ReturnType<typeof createAnthropic>>>,
   batchId: string,
 ): Promise<string[]> {
   const state = await getStreamState(sql, monitor.id, source, CLASSIFY_STREAM);
@@ -256,7 +256,7 @@ async function collectAndWrite(
     succeeded++;
   }
 
-  if (calls > 0) await recordUsage(sql, monitor.id, calls, inTok, outTok, cost);
+  if (calls > 0) await recordUsage(sql, monitor.id, calls, inTok, outTok, cost, calls);
 
   // Mass-failure guard (SPEC section 9): a run that classified zero items is
   // broken, not successful.
@@ -288,8 +288,27 @@ async function writeClassification(
   output: ClassificationOutput,
   model: string,
 ): Promise<void> {
-  const tags = output.tags.length > 0 ? output.tags : output.relevant ? ["General"] : [];
-  const matched = output.matched_existing_description.trim();
+  // Tag fallback stays inside the monitor's taxonomy (audit #26a).
+  const hasGeneral = monitor.config.tags.some((t) => t.name === "General");
+  const tags =
+    output.tags.length > 0 ? output.tags : output.relevant && hasGeneral ? ["General"] : [];
+
+  // Validate the model's match claim against real themes (audit #19): an
+  // unverified string would silently fragment or invent theme keys.
+  let matched = output.matched_existing_description.trim();
+  let signalType = output.signal_type;
+  if (matched) {
+    const found = await sql`
+      select signal_type from themes
+      where monitor_id = ${monitor.id} and source = ${source} and description = ${matched}
+      order by (signal_type = ${output.signal_type}) desc
+      limit 1`;
+    if (found.length === 0) {
+      matched = ""; // hallucinated match — treat as a fresh description
+    } else {
+      signalType = found[0]!.signal_type as string; // adopt the theme's type (PK part)
+    }
+  }
   const description = output.relevant ? matched || output.description : "";
 
   await insertClassification(sql, {
@@ -297,7 +316,7 @@ async function writeClassification(
     source,
     externalId,
     relevant: output.relevant,
-    signalType: output.signal_type,
+    signalType,
     sentiment: output.sentiment,
     tags,
     score: output.score,
@@ -308,7 +327,7 @@ async function writeClassification(
     promptVersion: PROMPT_VERSION,
   });
 
-  if (!output.relevant || output.signal_type === "noise" || !description) return;
+  if (!output.relevant || signalType === "noise" || !description) return;
 
   const itemRows = await sql`
     select url, author_handle, author_name, posted_at
@@ -319,7 +338,7 @@ async function writeClassification(
   await mergeTheme(sql, {
     monitorId: monitor.id,
     source,
-    signalType: output.signal_type,
+    signalType,
     description,
     tags,
     score: output.score,

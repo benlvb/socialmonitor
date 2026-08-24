@@ -81,36 +81,22 @@ export async function correctClassification(
         classified_at = now()
       where monitor_id = ${monitorId} and source = ${source} and external_id = ${externalId}`;
 
-    // Theme adjustment: remove from the old theme, merge into the new one.
+    // Theme adjustment: full recompute for BOTH themes (audit #17) — the old
+    // decrement left author_count stale, corrupting the ranking metric.
+    const { recomputeTheme } = await import("@socialmonitor/pipeline/repos");
     const oldDesc = old.description as string;
     if (old.relevant && oldDesc) {
-      await sql`
-        update themes set item_count = greatest(item_count - 1, 0), updated_at = now()
-        where monitor_id = ${monitorId} and source = ${source}
-          and signal_type = ${old.signal_type} and description = ${oldDesc}`;
-      await sql`
-        delete from themes
-        where monitor_id = ${monitorId} and source = ${source}
-          and signal_type = ${old.signal_type} and description = ${oldDesc}
-          and item_count = 0`;
+      await recomputeTheme(sql, monitorId, source as never, old.signal_type as string, oldDesc);
     }
     if (corrected.relevant && corrected.signal_type !== "noise" && corrected.description) {
-      const { mergeTheme } = await import("@socialmonitor/pipeline/repos");
-      await mergeTheme(sql, {
+      await recomputeTheme(
+        sql,
         monitorId,
-        source: source as never,
-        signalType: corrected.signal_type,
-        description: corrected.description,
-        tags: corrected.tags,
-        score: corrected.score,
-        author: (item?.author_handle as string) ?? "",
-        itemRef: {
-          externalId,
-          url: (item?.url as string) ?? "",
-          author: (item?.author_handle as string) ?? "",
-          postedAt: item?.posted_at ? new Date(item.posted_at as Date).toISOString() : "",
-        },
-      });
+        source as never,
+        corrected.signal_type,
+        corrected.description,
+        corrected.tags,
+      );
     }
   } catch (err) {
     return { error: `Correction failed: ${String(err)}` };

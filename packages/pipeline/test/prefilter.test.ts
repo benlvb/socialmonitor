@@ -19,3 +19,14 @@ describe("prefilterReason", () => {
     expect(prefilterReason("the app keeps crashing when I open settings", config)).toBeNull();
   });
 });
+
+describe("prefilter min_chars is config, not a constant", () => {
+  it("a raised min_chars drops longer messages", () => {
+    const strict = parseMonitorConfig({ prefilter: { min_chars: 30 } });
+    expect(prefilterReason("short but real complaint", strict)).toContain("short");
+  });
+  it("a lowered min_chars keeps terse messages", () => {
+    const loose = parseMonitorConfig({ prefilter: { min_chars: 3 } });
+    expect(prefilterReason("app bad", loose)).toBeNull();
+  });
+});

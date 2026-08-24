@@ -39,8 +39,9 @@ export async function resolveCredentials(
         const secret = JSON.parse(row.decrypted_secret as string) as Credentials;
         return { ...((row.config as Credentials) ?? {}), ...secret };
       }
-    } catch {
-      // vault schema may be absent locally — fall through to env
+    } catch (err) {
+      // Vault may be absent locally; a real failure must at least be visible.
+      console.warn(`[credentials] vault lookup failed for ${integration}; falling back to env`, err);
     }
   }
 

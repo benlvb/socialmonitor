@@ -16,10 +16,12 @@ const TOKEN_URL = "https://www.reddit.com/api/v1/access_token";
 const API = "https://oauth.reddit.com";
 const UA = "socialmonitor/0.1 (feedback monitoring)";
 
-let cachedToken: { token: string; expiresAt: number } | null = null;
+let cachedToken: { key: string; token: string; expiresAt: number } | null = null;
 
 async function getToken(creds: Credentials): Promise<string> {
-  if (cachedToken && Date.now() < cachedToken.expiresAt) return cachedToken.token;
+  const cacheKey = `${creds.REDDIT_CLIENT_ID}:${creds.REDDIT_USERNAME}`;
+  if (cachedToken && cachedToken.key === cacheKey && Date.now() < cachedToken.expiresAt)
+    return cachedToken.token;
   const basic = Buffer.from(`${creds.REDDIT_CLIENT_ID}:${creds.REDDIT_CLIENT_SECRET}`).toString("base64");
   const body = new URLSearchParams({
     grant_type: "password",
@@ -40,7 +42,7 @@ async function getToken(creds: Credentials): Promise<string> {
   if (!res.ok) throw errorFromStatus(res.status, "reddit token request failed");
   const data = (await res.json()) as { access_token?: string; expires_in?: number };
   if (!data.access_token) throw errorFromStatus(401, "reddit token missing in response");
-  cachedToken = { token: data.access_token, expiresAt: Date.now() + ((data.expires_in ?? 3600) - 300) * 1000 };
+  cachedToken = { key: cacheKey, token: data.access_token, expiresAt: Date.now() + ((data.expires_in ?? 3600) - 300) * 1000 };
   return cachedToken.token;
 }
 
@@ -224,7 +226,7 @@ async function fetchComments(ctx: FetchContext, creds: Credentials): Promise<Fet
     const postId = (post.external_id as string).replace("t3_", "");
     const parentText = (post.content as string).slice(0, 400);
     const data = (await apiGet(creds, `/comments/${postId}`, {
-      depth: "1",
+      depth: String(monitor.config.limits.reddit_comment_depth),
       limit: "100",
       sort: "new",
     })) as { data?: { children?: RedditThing[] } }[];

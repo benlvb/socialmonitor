@@ -32,8 +32,9 @@ export interface UsageLike {
 }
 
 export function estimateCostUsd(model: string, usage: UsageLike, batch: boolean): number {
-  const p = MODEL_PRICES[model];
-  if (!p) return 0;
+  // Unknown model: assume the MOST expensive tier — pricing at 0 silently
+  // disabled the $50 hard cap for any off-table model string (audit #6).
+  const p = MODEL_PRICES[model] ?? MODEL_PRICES["claude-fable-5"]!;
   const mult = batch ? 0.5 : 1;
   const perTok = 1 / 1_000_000;
   const cost =
@@ -44,9 +45,24 @@ export function estimateCostUsd(model: string, usage: UsageLike, batch: boolean)
   return cost * mult;
 }
 
-export function createAnthropic(): Anthropic | null {
-  if (!process.env.ANTHROPIC_API_KEY) return null;
-  return new Anthropic();
+import type { Db } from "@socialmonitor/db";
+import { resolveCredentials } from "../adapters/credentials";
+
+let cachedClient: { key: string; client: Anthropic } | null = null;
+
+/**
+ * Vault-aware client (audit #7): the Connections page must actually activate
+ * Anthropic (D22), not silently require env vars. Env still works as the
+ * bootstrap fallback via resolveCredentials.
+ */
+export async function createAnthropic(sql: Db | null, ownerId: string): Promise<Anthropic | null> {
+  const creds = await resolveCredentials(sql, ownerId, "anthropic");
+  const key = creds?.ANTHROPIC_API_KEY;
+  if (!key) return null;
+  if (cachedClient?.key !== key) {
+    cachedClient = { key, client: new Anthropic({ apiKey: key }) };
+  }
+  return cachedClient.client;
 }
 
 export interface ClassifyRequest {

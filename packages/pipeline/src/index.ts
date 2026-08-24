@@ -43,7 +43,7 @@ async function main(): Promise<void> {
           where monitor_id is null and level = 'error' and created_at > ${lastGlobalCheck}
           order by created_at asc limit 10`;
         lastGlobalCheck = new Date();
-        for (const r of rows) await notify(`${r.kind}\n${r.message}`);
+        for (const r of rows) await notify(`${r.kind}\n${r.message}`, db);
       } catch (err) {
         console.error("[worker] global event watch failed", err);
       }
