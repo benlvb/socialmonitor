@@ -13,12 +13,16 @@
 - 2026-08-24: Spec interview complete (22 decisions, see SPEC.md §0). SPEC.md + CLAUDE.md written.
 
 ## In progress
+- Nothing. P0-P4 built, two full audits fixed, main clean at 7515785.
 
 ## Next
-- P2 source adapters (x, reddit, youtube, telegram, discord) + metrics refresh
-- P3 web (auth, connections, monitor CRUD, dashboard v1, corrections)
-- P4 /ask + weekly summary + notifier
-- P5 activation (link Supabase, deploy Vercel + Railway, per-source shakedown as credentials arrive)
+1. P5 activation (blocked on credentials — see README "Activation"): Supabase project +
+   `supabase db push` (5 migrations) -> Anthropic key -> Vercel (root `apps/web`) ->
+   Railway (`railway.toml`) -> sources one at a time, each with a live shakedown.
+2. Cursor-behaviour integration tests under partial failure (both audits' top
+   recommendation; the class of bug that produced most audit findings).
+3. v2 features once data exists: authors & spikes dashboard + alert rules (needs 2-3
+   weeks of baseline), review queue, Slack notifier, official X API adapter.
 
 ## Blocked / awaiting user (P5 activation — see README.md)
 - Supabase project + migrations, Anthropic key, Vercel (root apps/web), Railway (railway.toml), twitterapi.io, Reddit app, YouTube key, spare TG number + session script, Discord bot, fresh BotFather notifier bot.
