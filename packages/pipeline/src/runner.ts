@@ -107,7 +107,7 @@ export async function runJob(sql: Db, job: JobPayload): Promise<void> {
  * - TransientError holds the cursor; SystemicError increments the breaker;
  * - a tripped breaker skips the stream and alerts once.
  */
-async function runFetchStream(
+export async function runFetchStream(
   sql: Db,
   monitor: MonitorRow,
   adapter: SourceAdapter,

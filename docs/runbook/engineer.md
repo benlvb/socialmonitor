@@ -73,7 +73,16 @@ loop, gating, and usage recording come for free.
 
 ## Verification
 `pnpm typecheck && pnpm test && pnpm build` gates every change. Fixture mode
-(`FIXTURE_MODE=1` + a DB) is the end-to-end harness. Live-source changes get a shakedown
+(`FIXTURE_MODE=1` + a DB) is the end-to-end harness.
+
+**Cursor tests are the ones that matter.** `test/cursor-contract.test.ts` asserts the
+runner's hold/advance/breaker decisions with the repo layer mocked;
+`test/adapter-cursors.test.ts` and `test/telegram-cursor.test.ts` drive the real adapters
+against a scripted `fetch` and a fake `sql` (`test/helpers/fake-sql.ts`) to assert what
+each source does with an incomplete window. Every one of those cases is a bug an audit
+found. When you change cursor logic, **mutation-test your test**: re-introduce the bug,
+watch the named test fail, restore, watch it pass. A cursor test that cannot fail is
+decoration. Live-source changes get a shakedown
 against real credentials (expect field drift vs fixtures — that trade-off is D22).
 
 ## Known deferred items (v2 parking lot)
