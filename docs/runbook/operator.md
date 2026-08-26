@@ -7,10 +7,16 @@ dashboards, weekly summaries, and Telegram alerts. You operate it almost entirel
 the web app; the worker and cron run themselves.
 
 ## Daily operation
-1. **Telegram channel first** — if nothing alerted, the pipeline is healthy. Alerts fire
-   only for: `breaker_tripped`, `budget_paused`, `mass_failure`,
-   `canary_message_content`, `summary_failed`, `summary_truncated`, and any error-level
-   event.
+1. **Telegram channel first** — if nothing alerted, the pipeline is healthy. You are
+   paged for `breaker_tripped`, `budget_paused`, `mass_failure`,
+   `canary_message_content`, `summary_failed`, `summary_truncated`, **and any
+   error-level event** — which also covers `pooler_misconfigured`, `job_poisoned`, and
+   `partition_maintenance_failed` (the last is raised inside pg_cron and reaches you via
+   the worker's 5-minute global-event watch, since it belongs to no monitor).
+   Warn-level kinds do **not** page and are visible only on the dashboard:
+   `coverage_gap` (a fetch window was larger than the page cap — the cursor held and the
+   remainder resumes next run), `batch_lost` (a stale classification batch was discarded
+   and resubmitted), `items_dropped`, `run_failed`, `summary_skipped`.
 2. **Dashboard per monitor** (`/monitors/<id>`): scan the four tiles (items·7d,
    relevant rate, budget burn, spend) and the Pipeline health table. Cursor age
    ("last success") is the liveness signal per stream.
@@ -29,6 +35,8 @@ the web app; the worker and cron run themselves.
 | Discord silently dead | `canary_message_content` alert | Discord dev portal → Bot → re-enable MESSAGE_CONTENT intent. No data was ever acknowledged as read: cursors held. |
 | Classify batches produce nothing | `mass_failure` alert | Almost always the Anthropic key (expired/rate-limited) or a schema change mid-flight. Railway logs name the batch id. |
 | Worker down | Cursor ages grow everywhere; `pgmq.metrics('pipeline_jobs')` queue length climbs | Railway → service → restart. Jobs are idempotent; the backlog drains itself. Nothing needs replaying. |
+| Everything looks idle but nothing runs | `pooler_misconfigured` at worker startup — `DATABASE_URL` points at the transaction pooler (`:6543`), where session-scoped advisory locks silently fail and every stream is skipped as "already locked" | Switch to the **Session pooler** connection string and restart the worker |
+| `coverage_gap` keeps repeating on one stream | That source produces more per window than `limits.max_pages_per_fetch` allows | Nothing is lost (the cursor holds and walks forward). Raise `max_pages_per_fetch` or lower `cadence_minutes.fetch` for that monitor |
 
 ## Safe vs. not safe
 - **Always safe:** restarting the worker; re-running anything (all writes are idempotent

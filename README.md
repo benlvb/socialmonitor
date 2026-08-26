@@ -63,7 +63,10 @@ Each step is independent. Stop at any point; everything done so far keeps workin
 ### 1. Supabase (the backbone)
 
 1. Create a project at [supabase.com](https://supabase.com) → note the project ref
-2. Apply the migrations (schema, RLS, pgmq queue, pg_cron producer):
+2. Apply the migrations — five files, applied in order
+   (`00001` schema + RLS + pgmq queue + pg_cron producer · `00002` dashboard aggregate
+   functions · `00003` partition RLS + producer hardening + event scoping ·
+   `00004` classification-call accounting · `00005` signup allowlist):
    ```sh
    cd packages/db
    npx supabase login
@@ -71,10 +74,19 @@ Each step is independent. Stop at any point; everything done so far keeps workin
    npx supabase db push
    ```
 3. Dashboard → Authentication: enable the **Email** provider, and **turn OFF public
-   sign-ups** once your own account exists. Signup is additionally gated in the database
-   (`app_allowlist`): the first account bootstraps itself and seeds the allowlist; every
-   later address must be added there first. Without a profile row a user cannot create a
-   monitor at all.
+   sign-ups** once your own account exists.
+
+   **Access is gated in two layers and they must agree:**
+
+   | Layer | What it gates | Where you set it |
+   |---|---|---|
+   | `ALLOWED_EMAILS` (env) | Whether a signed-in session may use the web app at all — checked in `proxy.ts`, `requireUser`, and `/api/ask` | Vercel env var (comma-separated) |
+   | `app_allowlist` (table) | Whether a profile row is created at signup — no profile means the `monitors.owner_id` FK cannot be satisfied, so the account cannot create anything even through the raw API | `insert into app_allowlist (email) values ('...');` in the SQL editor |
+
+   The **first** account to sign up bootstraps itself and seeds `app_allowlist`
+   automatically; every later address must be inserted there first. If an address is in
+   one layer but not the other it will authenticate but be unable to work — add it to
+   both.
 4. Fill `.env` (Dashboard → Settings → API / Database):
    ```
    SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL        → Project URL
@@ -228,6 +240,10 @@ first sync. Watch the dashboard's **Pipeline health** panel.
 | Items fetched but never classified | No Anthropic key, daily budget spent, or a batch is still processing (30-min cadence) | Dashboard budget tile + worker logs show which |
 | `coverage_gap` warning | More content in one window than the page cap allows; the cursor held and the remainder resumes next run | Nothing lost. If it persists, raise `limits.max_pages_per_fetch` or shorten `cadence_minutes.fetch` |
 | `pooler_misconfigured` error | `DATABASE_URL` is the transaction pooler; advisory locks cannot work | Switch to the **Session pooler** string and restart the worker |
+| `summary_truncated` / `summary_failed` | The weekly narrative hit the token cap, or the job threw | Truncated: the stored summary may end mid-sentence — re-run happens next Monday, or clear its `weekly_summaries` row to regenerate. Failed: the dispatch marker is cleared automatically so the producer retries |
+| `batch_lost` warning | A pending classification batch became unrecoverable (expired after ~29 days, or a 404) | Self-healing — the id is cleared and the items resubmit on the next tick. Only investigate if it repeats |
+| `job_poisoned` error | A queue job failed ~6 times and was archived | The message names the monitor and source; check the worker logs for the underlying throw |
+| `partition_maintenance_failed` error | Monthly partition creation failed (usually a row in `raw_items_default` colliding with the new range) | The producer keeps running (it no longer aborts). Find the offending row: `select * from raw_items_default order by posted_at desc limit 5;` |
 | Nothing happens after saving a monitor | Producer runs every 5 min; worker may be down | **Run now** on the dashboard; if still nothing: Railway logs; `select * from pgmq.metrics('pipeline_jobs');` |
 
 More depth: [docs/runbook/operator.md](./docs/runbook/operator.md).
