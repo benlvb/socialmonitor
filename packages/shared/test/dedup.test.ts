@@ -3,7 +3,7 @@ import { formatShortlist, jaccard, selectDedupCandidates, tokenize } from "../sr
 
 describe("tokenize", () => {
   it("lowercases, keeps alnum tokens >= 3 chars", () => {
-    expect(tokenize("Perps UI is SO laggy!! v2")).toEqual(new Set(["perps", "laggy"]));
+    expect(tokenize("Mobile UI is SO laggy!! v2")).toEqual(new Set(["mobile", "laggy"]));
   });
   it("empty input", () => {
     expect(tokenize("")).toEqual(new Set());

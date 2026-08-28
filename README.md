@@ -13,6 +13,25 @@ deploy, no code change.
 - Spec / design decisions: [SPEC.md](./SPEC.md) · Progress: [PROGRESS.md](./PROGRESS.md)
 - Deeper runbooks: [docs/runbook/operator.md](./docs/runbook/operator.md) ·
   [docs/runbook/engineer.md](./docs/runbook/engineer.md)
+- Contributing: [CONTRIBUTING.md](./CONTRIBUTING.md) · Security:
+  [SECURITY.md](./SECURITY.md) · Licence: [MIT](./LICENSE)
+
+## Status — read this before you rely on it
+
+The system is **complete but not yet battle-tested against live traffic.** All
+five sources, the classifier, the dashboard, `/ask`, and weekly summaries are
+built; the suite is green (78 tests, including mutation-verified cursor tests);
+three review passes (one automated, two full-repo model audits) have been
+applied. What has *not* happened is a production run: the adapters were
+verified against recorded fixtures and each platform's documented behaviour,
+not against real API traffic.
+
+Practically, that means: expect field drift and rate-limit surprises on each
+source's first live ticks, and watch the Pipeline health panel while you bring
+one credential online at a time. Nothing is lost when an adapter misbehaves —
+cursors hold rather than skip — but you should be present for it.
+
+There is no hosted version. You run your own.
 
 ## How it works
 
@@ -267,3 +286,27 @@ pnpm --filter web dev                        # web app
 Architecture rules that matter when extending (cursor contract, error classes, prompt
 discipline, how to add a source): [docs/runbook/engineer.md](./docs/runbook/engineer.md)
 and [SPEC.md](./SPEC.md).
+
+There is deliberately **no CI workflow** in this repo — run the three commands above
+locally before pushing. Add one in your own fork if you want it.
+
+## Responsible use
+
+Monitoring public social content still carries obligations. Respect each platform's terms
+of service and rate limits, honour applicable privacy law for any personal data you
+collect, and prefer official APIs where you have access. The X adapter ships pointed at a
+third-party scraping provider — read their terms and X's before you use it. You are
+responsible for how you deploy this.
+
+## Contributing
+
+Issues and pull requests are welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md). The short
+version: keep `pnpm typecheck && pnpm test && pnpm build` green, and if you touch cursor
+logic, add a test and prove it can fail.
+
+Security problems go through the repository's Security tab, not a public issue — see
+[SECURITY.md](./SECURITY.md).
+
+## Licence
+
+[MIT](./LICENSE) — do what you like, no warranty.

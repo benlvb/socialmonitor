@@ -38,4 +38,4 @@ pnpm monorepo: `apps/web` (Next.js, Vercel), `packages/pipeline` (worker, Railwa
 - Migrations live in `packages/db/supabase/migrations`; applied via supabase CLI once
   the project is linked (no local Docker on this machine).
 
-GitHub: `benlvb/socialmonitor` (private). Progress checkpoints in `PROGRESS.md`.
+GitHub: `benlvb/socialmonitor`. Progress checkpoints in `PROGRESS.md`.

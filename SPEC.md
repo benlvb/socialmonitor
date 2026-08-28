@@ -34,7 +34,7 @@ This file — not the original documents — is the source of truth.
 | D18 | Review loop v1: inline correction on any item → `review_verdicts` → dynamic few-shot (≤ 8/side) + rewrite of the classified row. v2: dedicated review queue on the same table. |
 | D19 | Notifier abstraction: Telegram (brand-new bot; no reused credentials) in v1, Slack later. Weekly summary → dashboard + Telegram. |
 | D20 | Monitor config DB-backed: structured form for common fields, schema-validated JSON editor for taxonomy/noise-rules/examples; JSON import/export. |
-| D21 | Hosting: Railway (worker), Vercel (web), Supabase (DB + queue + cron + vault). GitHub repo `benlvb/socialmonitor` (private). |
+| D21 | Hosting: Railway (worker), Vercel (web), Supabase (DB + queue + cron + vault). GitHub repo `benlvb/socialmonitor`. |
 | D22 | **Template-first**: entire system built with credential placeholders. Every adapter reports configured/unconfigured; unconfigured streams skip cleanly. Fixture mode drives the real pipeline end-to-end without live accounts. Plugging a key into the connections page activates a source with no deploy. |
 
 ## 1. Architecture

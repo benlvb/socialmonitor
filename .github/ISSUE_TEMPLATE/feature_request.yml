@@ -1,0 +1,25 @@
+name: Feature request
+description: Suggest a capability or change
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that you can't do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+    validations:
+      required: true
+  - type: textarea
+    id: spec
+    attributes:
+      label: Does this conflict with a decision in SPEC.md?
+      description: |
+        SPEC.md §0 lists 22 decisions (D1–D22) with their reasoning. If your
+        proposal contradicts one, say which and why the trade-off should change.
+        (It's fine if none apply.)

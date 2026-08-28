@@ -63,7 +63,7 @@ run the dataviz validator on any palette change).
 loop, gating, and usage recording come for free.
 
 ## Infra map
-- GitHub `benlvb/socialmonitor` (private) · Vercel root `apps/web` · Railway builds
+- GitHub `benlvb/socialmonitor` · Vercel root `apps/web` · Railway builds
   `packages/pipeline/Dockerfile` via root `railway.toml` · Supabase owns DB/queue/cron/
   Vault/auth. Migrations in `packages/db/supabase/migrations`, applied with
   `supabase db push` (no local Docker needed).
