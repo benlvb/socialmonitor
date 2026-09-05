@@ -89,7 +89,7 @@ stack on ports 553xx (chosen not to collide with another project's default 543xx
 `DB_URL` (a direct connection — session semantics, advisory locks work). Skip to step 4.
 
 1. Create a project at [supabase.com](https://supabase.com) → note the project ref
-2. Apply the migrations — six files, applied in order
+2. Apply the migrations — seven files, applied in order
    (`00001` schema + RLS + pgmq queue + pg_cron producer · `00002` dashboard aggregate
    functions · `00003` partition RLS + producer hardening + event scoping ·
    `00004` classification-call accounting · `00005` signup allowlist · `00006` App Store

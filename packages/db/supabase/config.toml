@@ -2,7 +2,7 @@
 # https://supabase.com/docs/guides/local-development/cli/config
 # A string used to distinguish different Supabase projects on the same host. Defaults to the
 # working directory name when running `supabase init`.
-project_id = "db"
+project_id = "socialmonitor"
 
 [api]
 enabled = true
@@ -106,8 +106,8 @@ enabled = true
 # Port to use for the email testing server web interface.
 port = 55324
 # Uncomment to expose additional ports for testing user applications that send emails.
-# smtp_port = 54325
-# pop3_port = 54326
+# smtp_port = 55325
+# pop3_port = 55326
 # admin_email = "admin@email.com"
 # sender_name = "Admin"
 
