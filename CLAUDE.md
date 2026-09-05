@@ -21,7 +21,7 @@ pnpm typecheck && pnpm test && pnpm build        # the gate for every change (no
 pnpm --filter @socialmonitor/pipeline test test/prefilter.test.ts   # one file (unscoped `pipeline` also resolves)
 pnpm --filter @socialmonitor/shared test
 pnpm --filter @socialmonitor/pipeline dev        # worker; idles harmlessly with no DATABASE_URL
-FIXTURE_MODE=1 pnpm --filter @socialmonitor/pipeline dev   # replays fixtures/*.json through the REAL pipeline
+FIXTURE_MODE=1 pnpm --filter @socialmonitor/pipeline dev   # + DATABASE_URL: replays fixtures/*.json through the REAL pipeline (idles without a DB)
 pnpm --filter web dev                            # Next.js on :3000; shows a setup notice when Supabase is unset
 ```
 
@@ -35,9 +35,12 @@ hardened in 00003) → coarse `(monitorId, source, kind)` messages into pgmq `pi
 (`kind` ∈ fetch | classify | metrics | weekly_summary). Dispatch bookkeeping lives in
 `sync_streams` rows named `dispatch/<kind>`. The worker (`packages/pipeline/src/index.ts`
 → `runner.ts`) reads with a 15-min visibility timeout, archives after 5 reads, and
-**expands each job into streams via `adapter.streams(monitor, targets)`**, running each
-stream under a session-scoped advisory lock (`queue.ts`). A stream's identity is
-`kind/<target uuid>` — which is why targets are upserted in place, never recreated.
+**expands each fetch job into streams via `adapter.streams(monitor, targets)`** (classify,
+metrics, and weekly_summary use the fixed stream names `classify`, `metrics_refresh`,
+`weekly_summary`), running each stream under a session-scoped advisory lock (`queue.ts`).
+Per-target streams are named `<role>/<target uuid>` (`search/`, `account/`, `mentions/`,
+`channel/`, `guild/`…), so a target's UUID is its stream identity — which is why targets
+are upserted in place, never recreated.
 
 **Fetch = the cursor contract.** `SourceAdapter.fetch(ctx)` returns
 `{ items, nextCursor, cursorMeta?, droppedCount? }` where `nextCursor: null` means
@@ -46,32 +49,42 @@ Typed errors from `packages/shared/src/errors.ts` decide everything: `PerItemErr
 and continue, `TransientError` hold, `SystemicError` increments the breaker (trips at 3,
 alerts, skipped until reset in the UI). `errorFromStatus()` maps HTTP codes. Every adapter
 does forward-only first sync (no cursor ⇒ record "now", fetch nothing); history is the
-explicit **Backfill** action in `apps/web/app/(app)/monitors/[id]/ops-actions.ts`, whose
-`backfillCursor()` switch is the one place that knows each source's cursor encoding.
+explicit **Backfill** action in `apps/web/app/(app)/monitors/[id]/ops-actions.ts`. Its
+`backfill()` function encodes each source's rewind: `backfillCursor()` for date-encodable
+scalar cursors (X, Reddit, YouTube), a `cursor_meta.channels` rewrite for Discord, a bounded
+message-id rewind for Telegram, and a generic fallback that writes X/YouTube-shaped
+`{pending_until, pending_newest}` meta. A new source whose cursor lives in `cursor_meta`
+needs its own branch there or backfill is a silent no-op (audit #5).
 Incomplete windows (page cap, budget) hold and emit `coverage_gap` — see the
 `pending_until`/`pending_newest` pattern in `adapters/x.ts` and per-channel cursor maps
 in `adapters/discord.ts`.
 
 **Classify has no cursor.** `classify/engine.ts` anti-joins `raw_items` against
 `item_classifications`; the Anthropic batch is *submitted on one tick and collected on
-the next*, with the batch id in the stream's `cursor_meta`. Prefilter (free) → budget
-gates (global monthly cap pauses classify only, never fetch; per-monitor daily cap) →
-`buildClassifyPrompt` → batch → `writeClassification` → `recomputeTheme`. Theme rows are
+the next*, with the batch id in the stream's `cursor_meta`. Budget gates first (global
+monthly cap pauses classify only, never fetch; the per-monitor daily cap bounds the pull) →
+prefilter (free; writes noise rows without tokens) → `buildClassifyPrompt` → batch →
+`writeClassification` → `recomputeTheme`. Theme rows are
 **recomputed from items, never incremented**, so corrections keep counts truthful.
-`author_count` (distinct authors) is the ranking metric everywhere, not `item_count`.
+`author_count` (distinct authors) ranks themes on the dashboard and in `/ask`; the
+classifier's dedup shortlist (`shared/src/dedup.ts`) deliberately ranks by `item_count` —
+do not "fix" it.
 
 **Two DB access layers in the web app.** Reads go through `@supabase/supabase-js` under
 RLS (`lib/supabase/server.ts` → `requireUser`). Writes that need the service path
 (Vault, queue, cursor edits, corrections, `/ask` tools) use `createDb()` (postgres.js,
 bypasses RLS) **only after an RLS ownership query has proven the row is the user's**,
-and always `sql.end()` in `finally`. Access is gated in two layers that must agree:
+and always `sql.end()` in `finally`. `lib/supabase/admin.ts` exports a service-role
+`adminClient()` that bypasses RLS and currently has no callers — same ownership-first rule
+applies if you use it. Access is gated in two layers that must agree:
 `ALLOWED_EMAILS` (session) and the `app_allowlist` table (profile creation, migration
 00005).
 
 **Credentials.** `resolveCredentials()` (`adapters/credentials.ts`): Vault row via
 `source_credentials` wins, env vars (`ENV_KEYS`) are the bootstrap fallback, `null` means
 unconfigured. `FIXTURE_MODE=1` makes every adapter report configured and replay
-`packages/pipeline/fixtures/<source>.json` on its first run per stream.
+`packages/pipeline/fixtures/*.json` (one per source, plus `youtube-comments.json`) on its
+first run per stream.
 
 ## Rules that override defaults
 
@@ -102,17 +115,23 @@ unconfigured. `FIXTURE_MODE=1` makes every adapter report configured and replay
 ## Adding a source — every seam that enumerates sources
 
 1. `packages/shared/src/constants.ts`: `SOURCES`, `INTEGRATIONS`, `TARGET_KINDS`,
-   `SOURCE_LABELS`, `NO_IMPRESSION_SOURCES` (if the platform has no view counts).
+   `SOURCE_LABELS`, `NO_IMPRESSION_SOURCES` (if the platform has no view counts); and any
+   per-source budget, toggle, or limit keys in `packages/shared/src/monitor-config.ts`
+   (`budgets.*_per_day`, `toggles.*`, `limits.*` follow the existing pattern).
 2. A migration widening the `check` constraints on `targets.source`, `targets.kind`, and
-   `source_credentials.source` (migration 00001 hardcodes the lists).
+   `source_credentials.source` (migration 00001 hardcodes the lists; the DB also allows
+   `x_api`, which `INTEGRATIONS` does not — the two lists are not 1:1).
 3. `packages/pipeline/src/adapters/<source>.ts` implementing `SourceAdapter`
    (`adapters/types.ts`), registered in `adapters/registry.ts`; env keys in
-   `adapters/credentials.ts` `ENV_KEYS` and `.env.example`; a fixture in
+   `adapters/credentials.ts` `ENV_KEYS` and `.env.example`; fixture file(s) in
    `packages/pipeline/fixtures/`.
 4. `apps/web`: a card in `connections/page.tsx` `CARDS` + `INTEGRATION_TO_SOURCE` in
-   `connections/actions.ts`; a cursor branch in `ops-actions.ts` `backfillCursor()`;
-   a fixed color slot (`SOURCE_VAR` in `components/charts.tsx` + `--series-N` in
-   `globals.css`, light and dark) — run the dataviz validator on any palette change.
+   `connections/actions.ts`; a rewind branch in `ops-actions.ts` `backfill()` (see the
+   cursor section); a fixed color slot (`SOURCE_VAR` in `components/charts.tsx` +
+   `--series-N` in `globals.css`, light and dark) — run the dataviz validator on any
+   palette change; `serverExternalPackages` in `apps/web/next.config.ts` if the adapter
+   pulls a Node-native SDK (the web build statically imports the whole adapter registry
+   through `getAdapter`).
 5. Tests: parse test in `test/adapters.test.ts` (fixture mode, `sql = null`) and a cursor
    test in `test/adapter-cursors.test.ts` using `test/helpers/fake-sql.ts` (`fakeSql()` +
    `stubFetch()`); README target-kinds table and connections table.
