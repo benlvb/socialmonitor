@@ -21,7 +21,7 @@ pnpm typecheck && pnpm test && pnpm build        # the gate for every change (no
 pnpm --filter @socialmonitor/pipeline test test/prefilter.test.ts   # one file (unscoped `pipeline` also resolves)
 pnpm --filter @socialmonitor/shared test
 pnpm --filter @socialmonitor/pipeline dev        # worker; idles harmlessly with no DATABASE_URL
-FIXTURE_MODE=1 pnpm --filter @socialmonitor/pipeline dev   # + DATABASE_URL: replays fixtures/*.json through the REAL pipeline (idles without a DB)
+FIXTURE_MODE=1 pnpm --filter @socialmonitor/pipeline dev   # + DATABASE_URL and an active monitor with enabled targets: replays fixtures/*.json through the REAL pipeline (idles without a DB, silent with no monitors)
 pnpm --filter web dev                            # Next.js on :3000; shows a setup notice when Supabase is unset
 ```
 
@@ -40,7 +40,8 @@ metrics, and weekly_summary use the fixed stream names `classify`, `metrics_refr
 `weekly_summary`), running each stream under a session-scoped advisory lock (`queue.ts`).
 Per-target streams are named `<role>/<target uuid>` (`search/`, `account/`, `mentions/`,
 `channel/`, `guild/`…), so a target's UUID is its stream identity — which is why targets
-are upserted in place, never recreated.
+are upserted in place, never recreated. Derived streams carry no target and a fixed name
+(`comments` in Reddit and YouTube, skipped by backfill).
 
 **Fetch = the cursor contract.** `SourceAdapter.fetch(ctx)` returns
 `{ items, nextCursor, cursorMeta?, droppedCount? }` where `nextCursor: null` means
@@ -51,9 +52,9 @@ alerts, skipped until reset in the UI). `errorFromStatus()` maps HTTP codes. Eve
 does forward-only first sync (no cursor ⇒ record "now", fetch nothing); history is the
 explicit **Backfill** action in `apps/web/app/(app)/monitors/[id]/ops-actions.ts`. Its
 `backfill()` function encodes each source's rewind: `backfillCursor()` for date-encodable
-scalar cursors (X, Reddit, YouTube), a `cursor_meta.channels` rewrite for Discord, a bounded
-message-id rewind for Telegram, and a generic fallback that writes X/YouTube-shaped
-`{pending_until, pending_newest}` meta. A new source whose cursor lives in `cursor_meta`
+scalar cursors (X, Reddit, YouTube, Discord's snowflake) plus a `cursor_meta.channels`
+rewrite for Discord, a bounded message-id rewind for Telegram, and a generic fallback that
+writes X-shaped `{pending_until, pending_newest}` meta (YouTube uses `pending_until` alone). A new source whose cursor lives in `cursor_meta`
 needs its own branch there or backfill is a silent no-op (audit #5).
 Incomplete windows (page cap, budget) hold and emit `coverage_gap` — see the
 `pending_until`/`pending_newest` pattern in `adapters/x.ts` and per-channel cursor maps
@@ -64,11 +65,13 @@ in `adapters/discord.ts`.
 the next*, with the batch id in the stream's `cursor_meta`. Budget gates first (global
 monthly cap pauses classify only, never fetch; the per-monitor daily cap bounds the pull) →
 prefilter (free; writes noise rows without tokens) → `buildClassifyPrompt` → batch →
-`writeClassification` → `recomputeTheme`. Theme rows are
+`writeClassification` → `recomputeTheme`. (`SPEC.md` §6 lists prefilter before the budget
+check; the code order above is what ships.) Theme rows are
 **recomputed from items, never incremented**, so corrections keep counts truthful.
-`author_count` (distinct authors) ranks themes on the dashboard and in `/ask`; the
-classifier's dedup shortlist (`shared/src/dedup.ts`) deliberately ranks by `item_count` —
-do not "fix" it.
+Distinct authors rank themes on the dashboard, in `/ask` (`author_count`), and in the
+weekly summary (per-week recount in `summary.ts`); the classifier's dedup shortlist
+(`shared/src/dedup.ts`) ranks by `item_count`, the only count `getThemeCandidates` selects.
+`SPEC.md` §6 says `author_count` everywhere — change neither side silently.
 
 **Two DB access layers in the web app.** Reads go through `@supabase/supabase-js` under
 RLS (`lib/supabase/server.ts` → `requireUser`). Writes that need the service path
