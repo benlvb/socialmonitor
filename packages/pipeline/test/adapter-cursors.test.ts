@@ -444,7 +444,11 @@ describe("App Store cursor semantics", () => {
     expect(r.nextCursor).toBe(CURSOR);
   });
 
-  it("a short page means the feed is exhausted: window covered, cursor advances", async () => {
+  it("a short page with no usable `last` HOLDS: the end is unconfirmable, so the pages behind it are not skipped", async () => {
+    // Apple always ships `last` alongside entries (100 live shapes, plus
+    // Broadcasts p3 = 34 entries/last=3), so a short link-less page is a
+    // truncated response, not an exhausted feed. Advancing here would drop
+    // pages 3+ permanently once the 500-review window slides.
     const s = stubFetch([
       { match: /page=1\/json/, response: { body: fullPage(1) } },
       { match: /page=2\/json/, response: { body: feed([review(7, iso(5)), review(6, iso(4))]) } },
@@ -456,9 +460,29 @@ describe("App Store cursor semantics", () => {
       stream: streamDef, cursor: CURSOR, cursorMeta: {},
     });
     expect(r.items).toHaveLength(52);
-    expect(r.nextCursor).toBe(iso(10_000 - 100));
+    expect(r.nextCursor).toBeNull();
     expect(s.urls).toHaveLength(2);
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(1);
     expect(eventsOfKind(sql, "coverage_lost")).toHaveLength(0);
+  });
+
+  it("a short page AT the feed's own `last` is a clean end: cursor advances", async () => {
+    // The real exhaustion shape, measured live: the final page is short and
+    // still carries `last` equal to itself, so the walk ends at the
+    // `page >= lastPage` check without ever reaching the anomaly branch.
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: linked(fullPage(1).feed.entry, 1, 2) } },
+      { match: /page=2\/json/, response: { body: linked([review(7, iso(5)), review(6, iso(4))], 2, 2) } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith({ limits: { max_pages_per_fetch: 5 } }),
+      stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(52);
+    expect(r.nextCursor).toBe(iso(10_000 - 100));
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0);
   });
 
   it("Apple's 10-page cap is lossy-but-covered: cursor ADVANCES with a coverage_lost error", async () => {
