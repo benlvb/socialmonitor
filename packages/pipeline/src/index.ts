@@ -1,3 +1,4 @@
+import "./env";
 import { createDb } from "@socialmonitor/db";
 import { archiveJob, checkSessionAffinity, deleteJob, readJobs, shouldArchive } from "./queue";
 import { runJob } from "./runner";

@@ -67,6 +67,7 @@ git clone https://github.com/benlvb/socialmonitor && cd socialmonitor
 pnpm install
 pnpm typecheck && pnpm test && pnpm build   # 141 tests, all packages
 cp .env.example .env                        # everything blank is a valid state
+ln -s ../../.env apps/web/.env              # Next.js only reads env from apps/web (a symlink is fine)
 pnpm --filter @socialmonitor/pipeline dev   # worker starts, reports "idle (unconfigured)"
 pnpm --filter web dev                       # http://localhost:3000 shows the setup notice
 ```
@@ -81,8 +82,14 @@ Each step is independent. Stop at any point; everything done so far keeps workin
 
 ### 1. Supabase (the backbone)
 
+**Local alternative (no account):** `packages/db/supabase/config.toml` defines a local
+stack on ports 553xx (chosen not to collide with another project's default 543xx stack).
+`cd packages/db && npx supabase start` applies every migration and prints the keys;
+`npx supabase status -o env` reprints them for `.env`. Point `DATABASE_URL` at the printed
+`DB_URL` (a direct connection — session semantics, advisory locks work). Skip to step 4.
+
 1. Create a project at [supabase.com](https://supabase.com) → note the project ref
-2. Apply the migrations — six files, applied in order
+2. Apply the migrations — seven files, applied in order
    (`00001` schema + RLS + pgmq queue + pg_cron producer · `00002` dashboard aggregate
    functions · `00003` partition RLS + producer hardening + event scoping ·
    `00004` classification-call accounting · `00005` signup allowlist · `00006` App Store
