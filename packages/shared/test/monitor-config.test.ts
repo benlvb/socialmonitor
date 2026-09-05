@@ -36,3 +36,16 @@ describe("prefilter config", () => {
     expect(c.prefilter.mute_patterns).toEqual([]);
   });
 });
+
+describe("appstore storefronts", () => {
+  it("defaults to the US storefront", () => {
+    expect(parseMonitorConfig({}).limits.appstore_storefronts).toEqual(["us"]);
+  });
+  it("accepts lowercase two-letter codes and rejects anything else", () => {
+    expect(parseMonitorConfig({ limits: { appstore_storefronts: ["us", "gb", "my"] } }).limits.appstore_storefronts).toEqual(["us", "gb", "my"]);
+    const r = validateMonitorConfig({ limits: { appstore_storefronts: ["USA"] } });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.issues[0]).toContain("appstore_storefronts");
+    expect(validateMonitorConfig({ limits: { appstore_storefronts: [] } }).ok).toBe(false);
+  });
+});

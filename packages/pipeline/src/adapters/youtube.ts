@@ -280,7 +280,7 @@ export const youtubeAdapter: SourceAdapter = {
         Number.MAX_SAFE_INTEGER,
       );
       if (!completed) {
-        if (!(await hasEventToday(sql, monitor.id, "coverage_gap"))) {
+        if (!(await hasEventToday(sql, monitor.id, "coverage_gap", stream.stream))) {
           await logEvent(sql, {
             monitorId: monitor.id,
             source: "youtube",
@@ -312,7 +312,7 @@ export const youtubeAdapter: SourceAdapter = {
 
     const parsed = rawItems.map((v) => parseVideo(monitor.id, stream.stream, v)).filter((i): i is RawItem => i !== null);
     const items = newerThan(parsed, cursor);
-    if (!completed && !(await hasEventToday(sql, monitor.id, "coverage_gap"))) {
+    if (!completed && !(await hasEventToday(sql, monitor.id, "coverage_gap", stream.stream))) {
       await logEvent(sql, {
         monitorId: monitor.id,
         source: "youtube",

@@ -438,16 +438,22 @@ export async function updateStreamMeta(
       updated_at = now()`;
 }
 
-/** Debounce helper: has an event of this kind fired today for this monitor? */
+/**
+ * Debounce helper: has an event of this kind fired today for this monitor?
+ * Pass `stream` when the event records loss on ONE stream — a monitor-wide
+ * bucket lets another source's advisory gap silence it (review F2).
+ */
 export async function hasEventToday(
   sql: Db,
   monitorId: string | null,
   kind: string,
+  stream: string | null = null,
 ): Promise<boolean> {
   const rows = await sql`
     select 1 from pipeline_events
     where kind = ${kind}
       and (monitor_id = ${monitorId} or (${monitorId}::uuid is null and monitor_id is null))
+      and (${stream}::text is null or stream = ${stream})
       and created_at >= date_trunc('day', now())
     limit 1`;
   return rows.length > 0;

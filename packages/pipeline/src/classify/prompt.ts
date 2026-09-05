@@ -141,7 +141,14 @@ function renderItemContext(item: UnclassifiedItem): string {
   const ctx = item.context ?? {};
   const parts: string[] = [];
   if (typeof ctx.channel_name === "string" && ctx.channel_name) {
-    parts.push(`Channel: ${flattenForPrompt(ctx.channel_name, 80)}`);
+    parts.push(`Channel: ${defangPromptMarkers(flattenForPrompt(ctx.channel_name, 80))}`);
+  }
+  if (typeof ctx.rating === "number" && Number.isFinite(ctx.rating)) {
+    const version =
+      typeof ctx.app_version === "string" && ctx.app_version
+        ? ` (app version ${defangPromptMarkers(flattenForPrompt(ctx.app_version, 24))})`
+        : "";
+    parts.push(`Star rating given by the author: ${ctx.rating}/5${version}`);
   }
   if (typeof ctx.parent_text === "string" && ctx.parent_text) {
     parts.push(`In reply to: "${defangPromptMarkers(flattenForPrompt(ctx.parent_text, 400))}"`);

@@ -1,0 +1,57 @@
+[
+  {
+    "id": { "label": "14500000005" },
+    "title": { "label": "Widgets stopped syncing" },
+    "content": { "label": "Home screen widgets show stale numbers for hours after the 4.2 update. The app itself is fine but the widgets are the reason I paid for the team plan." },
+    "updated": { "label": "2026-08-22T09:15:00-07:00" },
+    "author": { "name": { "label": "pmarcus" }, "uri": { "label": "https://itunes.apple.com/us/reviews/id9001" } },
+    "im:rating": { "label": "2" },
+    "im:version": { "label": "4.2.0" },
+    "im:voteSum": { "label": "5" },
+    "im:voteCount": { "label": "5" }
+  },
+  {
+    "id": { "label": "14500000004" },
+    "title": { "label": "Crashes on launch" },
+    "content": { "label": "Since 4.2 the acme widget app crashes every time I open a dashboard with more than a handful of charts. Reinstalled twice, same thing. Please fix." },
+    "updated": { "label": "2026-08-21T18:40:12-07:00" },
+    "author": { "name": { "label": "sarah_d" }, "uri": { "label": "https://itunes.apple.com/us/reviews/id9002" } },
+    "im:rating": { "label": "1" },
+    "im:version": { "label": "4.2.0" },
+    "im:voteSum": { "label": "12" },
+    "im:voteCount": { "label": "12" }
+  },
+  {
+    "id": { "label": "14500000003" },
+    "title": { "label": "Please add CSV export" },
+    "content": { "label": "Solid app, but PDF-only export is useless for our finance team. Would be five stars with CSV." },
+    "updated": { "label": "2026-08-21T07:02:45-07:00" },
+    "author": { "name": { "label": "mike.b" }, "uri": { "label": "https://itunes.apple.com/us/reviews/id9003" } },
+    "im:rating": { "label": "3" },
+    "im:version": { "label": "4.1.3" },
+    "im:voteSum": { "label": "2" },
+    "im:voteCount": { "label": "2" }
+  },
+  {
+    "id": { "label": "14500000002" },
+    "title": { "label": "👎" },
+    "content": { "label": "👎" },
+    "updated": { "label": "2026-08-20T22:11:09-07:00" },
+    "author": { "name": { "label": "oxicc" }, "uri": { "label": "https://itunes.apple.com/us/reviews/id9004" } },
+    "im:rating": { "label": "1" },
+    "im:version": { "label": "4.2.0" },
+    "im:voteSum": { "label": "0" },
+    "im:voteCount": { "label": "0" }
+  },
+  {
+    "id": { "label": "14500000001" },
+    "title": { "label": "Best dashboard app I have used" },
+    "content": { "label": "Sharing a dashboard with my team is one tap and the charts actually look good on a phone. Worth every cent." },
+    "updated": { "label": "2026-08-20T13:30:00-07:00" },
+    "author": { "name": { "label": "jchen" }, "uri": { "label": "https://itunes.apple.com/us/reviews/id9005" } },
+    "im:rating": { "label": "5" },
+    "im:version": { "label": "4.1.3" },
+    "im:voteSum": { "label": "8" },
+    "im:voteCount": { "label": "9" }
+  }
+]

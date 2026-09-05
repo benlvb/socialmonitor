@@ -20,6 +20,7 @@ const SOURCE_VAR: Record<Source, string> = {
   youtube: "var(--series-3)",
   telegram: "var(--series-4)",
   discord: "var(--series-5)",
+  appstore: "var(--series-6)",
 };
 
 const axisProps = {

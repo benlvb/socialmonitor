@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { parseMonitorConfig } from "@socialmonitor/shared";
+import { SystemicError, TransientError, parseMonitorConfig } from "@socialmonitor/shared";
 import { fakeSql, stubFetch } from "./helpers/fake-sql";
 import type { MonitorRow, TargetRow } from "../src/db/repos";
 import { xAdapter } from "../src/adapters/x";
 import { redditAdapter } from "../src/adapters/reddit";
 import { discordAdapter } from "../src/adapters/discord";
+import { appstoreAdapter, lastPageOf } from "../src/adapters/appstore";
+import { youtubeAdapter } from "../src/adapters/youtube";
 
 /**
  * Adapter-level cursor semantics. Every case here corresponds to a real bug an
@@ -339,5 +341,496 @@ describe("Discord cursor semantics", () => {
     // Fetched from (threadId - 1) rather than skipping the thread's opening messages.
     expect(decodeURIComponent(s.urls.at(-1)!)).toContain(`after=${(BigInt(threadId) - 1n).toString()}`);
     expect(r.items).toHaveLength(1);
+  });
+});
+
+describe("App Store cursor semantics", () => {
+  const CURSOR = "2026-08-20T12:00:00.000Z";
+  const cursorMs = Date.parse(CURSOR);
+  const iso = (offsetMin: number) => new Date(cursorMs + offsetMin * 60_000).toISOString();
+  const review = (id: number, updated: string, rating = 1) => ({
+    id: { label: String(id) },
+    title: { label: `review ${id}` },
+    content: { label: "the widget app crashes on launch after the latest update, twice today" },
+    updated: { label: updated },
+    author: { name: { label: `user${id}` }, uri: { label: `https://itunes.apple.com/us/reviews/id${id}` } },
+    "im:rating": { label: String(rating) },
+    "im:version": { label: "2.4.1" },
+    "im:voteSum": { label: "0" },
+    "im:voteCount": { label: "3" },
+  });
+  const feed = (entries: unknown[]) => ({ feed: { entry: entries } });
+  /** A healthy Apple page carries first/previous/next/last links. */
+  const linked = (entries: unknown[], page: number, last: number) => ({
+    feed: {
+      entry: entries,
+      link: ["first", "previous", "next", "last"].map((rel) => ({
+        attributes: { rel, href: `https://itunes.apple.com/us/rss/customerreviews/page=${rel === "last" ? last : rel === "next" ? Math.min(page + 1, last) : rel === "previous" ? Math.max(page - 1, 1) : 1}/id=310633997/sortBy=mostRecent/json` },
+      })),
+    },
+  });
+  /** A full 50-entry page, newest-first, all newer than the cursor. */
+  const fullPage = (page: number) =>
+    feed(Array.from({ length: 50 }, (_, k) => review(100_000 - page * 100 - k, iso(10_000 - page * 100 - k))));
+  const appTarget = target({ source: "appstore", kind: "app", value: "310633997" });
+  const streamDef = { stream: "reviews/us/t1", target: appTarget };
+  const eventsOfKind = (sql: ReturnType<typeof fakeSql>, kind: string) =>
+    sql.calls.filter((c) => /insert into pipeline_events/.test(c.text) && c.values.includes(kind));
+
+  it("forward-only first sync: records now, fetches nothing", async () => {
+    const s = stubFetch([]);
+    restore = s.restore;
+    const r = await appstoreAdapter.fetch({
+      sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: null, cursorMeta: {},
+    });
+    expect(r.items).toEqual([]);
+    expect(Date.parse(r.nextCursor!)).toBeGreaterThan(Date.now() - 60_000);
+    expect(s.urls).toHaveLength(0);
+  });
+
+  it("walking back to the cursor covers the window: newer items stored, cursor advances", async () => {
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: feed([review(3, iso(120)), review(2, iso(60)), review(1, iso(-60))]) } },
+    ]);
+    restore = s.restore;
+    const r = await appstoreAdapter.fetch({
+      sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items.map((i) => i.externalId)).toEqual(["3", "2"]);
+    expect(r.nextCursor).toBe(iso(120));
+    expect(s.urls).toHaveLength(1);
+    expect(s.urls[0]).toContain("/us/rss/customerreviews/id=310633997/sortBy=mostRecent/page=1/json");
+  });
+
+  it("max_pages_per_fetch does not apply: the walk runs to completion inside Apple's cap", async () => {
+    // A smaller cap could never converge on a busy backfill (review S2): two
+    // runs would return the same 50 with the cursor held, forever.
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: fullPage(1) } },
+      { match: /page=2\/json/, response: { body: feed([review(7, iso(5)), review(1, iso(-60))]) } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith({ limits: { max_pages_per_fetch: 1 } }),
+      stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(51);
+    expect(r.nextCursor).toBe(iso(10_000 - 100));
+    expect(s.urls).toHaveLength(2);
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0);
+  });
+
+  it("a NEW review in the cursor's own second is kept, not skipped as covered", async () => {
+    // `updated` is second-granular: review 4 lands at exactly the cursor set by
+    // review 3 one run earlier. `<=` lost it permanently (review F1).
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: feed([review(4, CURSOR), review(1, iso(-60))]) } },
+    ]);
+    restore = s.restore;
+    const r = await appstoreAdapter.fetch({
+      sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items.map((i) => i.externalId)).toEqual(["4"]);
+    expect(r.nextCursor).toBe(CURSOR);
+  });
+
+  it("a short page means the feed is exhausted: window covered, cursor advances", async () => {
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: fullPage(1) } },
+      { match: /page=2\/json/, response: { body: feed([review(7, iso(5)), review(6, iso(4))]) } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith({ limits: { max_pages_per_fetch: 5 } }),
+      stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(52);
+    expect(r.nextCursor).toBe(iso(10_000 - 100));
+    expect(s.urls).toHaveLength(2);
+    expect(eventsOfKind(sql, "coverage_lost")).toHaveLength(0);
+  });
+
+  it("Apple's 10-page cap is lossy-but-covered: cursor ADVANCES with a coverage_lost error", async () => {
+    // Real feeds with 500+ reviews report last=10 on every page — the cap
+    // itself — so the `last` break must not strand the cap flag (round 3 N1).
+    const s = stubFetch(
+      Array.from({ length: 10 }, (_, k) => ({
+        match: new RegExp(`page=${k + 1}/json`), response: { body: linked(fullPage(k + 1).feed.entry, k + 1, 10) },
+      })),
+    );
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith({ limits: { max_pages_per_fetch: 10 } }),
+      stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(500);
+    // Holding here would re-walk 10 pages every tick forever and never advance.
+    expect(r.nextCursor).toBe(iso(10_000 - 100));
+    expect(s.urls).toHaveLength(10);
+    expect(s.urls.some((u) => /page=11\//.test(u))).toBe(false);
+    const lost = eventsOfKind(sql, "coverage_lost");
+    expect(lost).toHaveLength(1);
+    expect(lost[0]!.values).toContain("error");
+    expect(String(lost[0]!.values.find((v) => typeof v === "string" && /unreachable/.test(v)))).toContain("500");
+    // Debounced per STREAM, not per monitor: another storefront or source's
+    // advisory gap must not silence a loss on this one (review F2).
+    const debounce = sql.calls.find((c) => /from pipeline_events/.test(c.text) && c.values.includes("coverage_lost"));
+    expect(debounce?.values).toContain("reviews/us/t1");
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0);
+  });
+
+  it("Apple's cap with every entry unparseable HOLDS and does not claim an advance", async () => {
+    const broken = (page: number) => feed(Array.from({ length: 50 }, (_, k) => ({ id: { label: String(page * 100 + k) }, title: { label: "no updated field" } })));
+    const s = stubFetch(
+      Array.from({ length: 10 }, (_, k) => ({ match: new RegExp(`page=${k + 1}/json`), response: { body: linked(broken(k + 1).feed.entry, k + 1, 10) } })),
+    );
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(0);
+    expect(r.nextCursor).toBeNull();
+    expect(r.droppedCount).toBe(500);
+    expect(eventsOfKind(sql, "coverage_lost")).toHaveLength(0); // review F3: no "cursor advanced" while holding
+  });
+
+  it("a 400 past page 1 is ambiguous (feed end vs hiccup): transient, cursor held", async () => {
+    // Advancing here could skip reviews Apple failed to serve (review S6).
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: fullPage(1) } },
+      { match: /page=2\/json/, response: { status: 400, body: "" } },
+    ]);
+    restore = s.restore;
+    await expect(
+      appstoreAdapter.fetch({
+        sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+      }),
+    ).rejects.toThrow(TransientError);
+    expect(s.urls).toHaveLength(2);
+  });
+
+  it("a 400 on page 1 is a bad storefront or app: systemic (breaker), cursor untouched", async () => {
+    const s = stubFetch([{ match: /page=1\/json/, response: { status: 400, body: "" } }]);
+    restore = s.restore;
+    await expect(
+      appstoreAdapter.fetch({
+        sql: fakeSql().db, monitor: monitorWith(),
+        stream: { stream: "reviews/zz/t1", target: appTarget }, cursor: CURSOR, cursorMeta: {},
+      }),
+    ).rejects.toThrow(SystemicError);
+  });
+
+  it("an edited review (id already stored) is dropped, but the cursor still moves past it", async () => {
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: feed([review(9, iso(120)), review(8, iso(60)), review(1, iso(-60))]) } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    sql.when(/from raw_items/, [{ external_id: "9" }]);
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items.map((i) => i.externalId)).toEqual(["8"]);
+    expect(r.nextCursor).toBe(iso(120));
+    expect(r.droppedCount).toBeUndefined(); // an edit is not a parse failure
+    // Scoped to this stream so the query matches the edit case exactly
+    // (review S1; ids are disjoint across storefronts in practice).
+    const dedupe = sql.calls.find((c) => /from raw_items/.test(c.text));
+    expect(dedupe?.text).toContain("stream = ?");
+    expect(dedupe?.values).toContain("reviews/us/t1");
+  });
+
+  it("a transient EMPTY page mid-feed (no links) holds the cursor and warns instead of skipping pages", async () => {
+    // Probed live: 4 of 30 app×storefront pairs served an empty page between
+    // two full ones (review N1). Advancing here orphaned pages 4..10.
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: linked(fullPage(1).feed.entry, 1, 10) } },
+      { match: /page=2\/json/, response: { body: linked(fullPage(2).feed.entry, 2, 10) } },
+      { match: /page=3\/json/, response: { body: { feed: {} } } },
+      { match: /page=4\/json/, response: { body: linked(fullPage(4).feed.entry, 4, 10) } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(100); // pages 1-2 still stored
+    expect(r.nextCursor).toBeNull(); // held: page 3's reviews are not skipped
+    expect(s.urls).toHaveLength(3); // page 4 not requested — the walk is contiguous or nothing
+    const gaps = eventsOfKind(sql, "coverage_gap");
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]!.values).toContain("warn");
+  });
+
+  it("a short page BELOW the feed's own `last` is an anomaly: hold + warn", async () => {
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: linked(fullPage(1).feed.entry, 1, 3) } },
+      { match: /page=2\/json/, response: { body: linked([review(7, iso(5))], 2, 3) } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(51);
+    expect(r.nextCursor).toBeNull();
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(1);
+  });
+
+  it("the feed's `last` link ends the walk: a full page 1 with last=1 advances without asking for page 2", async () => {
+    const s = stubFetch([{ match: /page=1\/json/, response: { body: linked(fullPage(1).feed.entry, 1, 1) } }]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(50);
+    expect(r.nextCursor).toBe(iso(10_000 - 100));
+    expect(s.urls).toHaveLength(1);
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0);
+  });
+
+  it("an empty page PAST `last` is the genuine end (small apps): advance, no warning", async () => {
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: linked(fullPage(1).feed.entry, 1, 2) } },
+      { match: /page=2\/json/, response: { body: linked([], 3, 1) } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(50);
+    expect(r.nextCursor).toBe(iso(10_000 - 100));
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0);
+  });
+
+  it("an empty page 1 with no links (unserved storefront or a blip) holds quietly", async () => {
+    const s = stubFetch([{ match: /page=1\/json/, response: { body: { feed: {} } } }]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toEqual([]);
+    expect(r.nextCursor).toBeNull();
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0);
+  });
+
+  it("a SHORT page 10 with last=10 is a clean end, not the cap: advance, no coverage_lost", async () => {
+    const s = stubFetch([
+      ...Array.from({ length: 9 }, (_, k) => ({ match: new RegExp(`page=${k + 1}/json`), response: { body: linked(fullPage(k + 1).feed.entry, k + 1, 10) } })),
+      { match: /page=10\/json/, response: { body: linked([review(5, iso(3)), review(4, iso(2))], 10, 10) } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(452);
+    expect(r.nextCursor).toBe(iso(10_000 - 100));
+    expect(eventsOfKind(sql, "coverage_lost")).toHaveLength(0);
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0);
+  });
+
+  it("the anomaly (hold) path still drops already-stored ids — it re-walks every tick, so it meets edits most", async () => {
+    const page1 = fullPage(1).feed.entry as { id: { label: string } }[];
+    const storedId = page1[0]!.id.label;
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: linked(page1, 1, 10) } },
+      { match: /page=2\/json/, response: { body: { feed: {} } } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    sql.when(/from raw_items/, [{ external_id: storedId }]);
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    expect(r.items).toHaveLength(49); // round 3 N2: the early return skipped the dedupe
+    expect(r.items.some((i) => i.externalId === storedId)).toBe(false);
+  });
+
+  it("an empty page 1 WITH links claiming more pages is a blank, not an unserved storefront: hold + warn", async () => {
+    const s = stubFetch([{ match: /page=1\/json/, response: { body: linked([], 1, 10) } }]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toEqual([]);
+    expect(r.nextCursor).toBeNull();
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(1);
+  });
+
+  it("lastPageOf reads the path segment of Apple's real href, which carries page= twice", () => {
+    const href = "https://itunes.apple.com/us/rss/customerreviews/page=10/id=310633997/sortby=mostrecent/xml?urlDesc=/customerreviews/id=310633997/sortBy=mostRecent/page=2/json";
+    expect(lastPageOf({ feed: { link: [{ attributes: { rel: "last", href } }] } })).toBe(10);
+    expect(lastPageOf({ feed: { link: { attributes: { rel: "last", href: "https://x/page=3/json" } } } })).toBe(3);
+    expect(lastPageOf({ feed: { link: [{ attributes: { rel: "last", href: "https://x/page=0/json" } }] } })).toBeNull();
+    expect(lastPageOf({ feed: { link: [{ attributes: { rel: "next", href: "https://x/page=2/json" } }] } })).toBeNull();
+    expect(lastPageOf({ feed: {} })).toBeNull();
+    expect(lastPageOf({})).toBeNull();
+    // A malformed element must not throw: the runner would read it as systemic.
+    expect(lastPageOf({ feed: { link: [null as unknown as { attributes?: { rel?: string; href?: string } }] } })).toBeNull();
+  });
+
+  it("an unserved storefront (live shape: five links with EMPTY hrefs, no entries) holds quietly", async () => {
+    // Verbatim shape from storefronts Apple does not serve (probed li/ad/la):
+    // links are present but carry no page number, so `last` is unusable.
+    const unserved = {
+      feed: {
+        link: ["alternate", "self", "first", "last", "previous", "next"].map((rel) => ({ attributes: { rel, href: "" } })),
+      },
+    };
+    const s = stubFetch([{ match: /page=1\/json/, response: { body: unserved } }]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: { stream: "reviews/li/t1", target: appTarget }, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toEqual([]);
+    expect(r.nextCursor).toBeNull();
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0); // not a daily warning per dead storefront
+    expect(s.urls).toHaveLength(1);
+  });
+
+  it("a page 10 with MORE than 50 entries still counts as the cap (>= guard)", async () => {
+    const s = stubFetch([
+      ...Array.from({ length: 9 }, (_, k) => ({ match: new RegExp(`page=${k + 1}/json`), response: { body: linked(fullPage(k + 1).feed.entry, k + 1, 10) } })),
+      { match: /page=10\/json/, response: { body: linked([...(fullPage(10).feed.entry as unknown[]), review(1, iso(1))], 10, 10) } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(501);
+    expect(eventsOfKind(sql, "coverage_lost")).toHaveLength(1);
+  });
+
+  it("expands one app target into one stream per configured storefront, uuid last", () => {
+    const streams = appstoreAdapter.streams(
+      monitorWith({ limits: { appstore_storefronts: ["us", "gb"] } }),
+      [appTarget, target({ id: "t2", source: "appstore", kind: "keyword", value: "ignored" })],
+    );
+    expect(streams.map((s) => s.stream)).toEqual(["reviews/us/t1", "reviews/gb/t1"]);
+  });
+
+  it("a target that is not an app id fails systemically instead of fetching", async () => {
+    const s = stubFetch([]);
+    restore = s.restore;
+    await expect(
+      appstoreAdapter.fetch({
+        sql: fakeSql().db, monitor: monitorWith(),
+        stream: { stream: "reviews/us/t1", target: target({ source: "appstore", kind: "app", value: "acme widget" }) },
+        cursor: CURSOR, cursorMeta: {},
+      }),
+    ).rejects.toThrow(SystemicError);
+    expect(s.urls).toHaveLength(0);
+  });
+});
+
+describe("coverage_gap debounce is scoped per stream (review of PR #2)", () => {
+  // The debounce query is `select 1 from pipeline_events where kind = ? … (?::text is null or stream = ?)`.
+  // Unscoped (stream = null) it matches ANY coverage_gap for the monitor that day, so an
+  // App Store blank page at 08:00 silenced X/Reddit/YouTube's own warnings until midnight.
+  function debounceQuery(sql: ReturnType<typeof fakeSql>) {
+    const q = sql.calls.find((c) => /from pipeline_events where kind = \?/.test(c.text));
+    expect(q, "the adapter consulted the coverage_gap debounce").toBeDefined();
+    expect(q!.values[0]).toBe("coverage_gap");
+    return q!.values;
+  }
+
+  it("X holds an incomplete window and debounces on ITS stream, not the monitor", async () => {
+    vi.stubEnv("TWITTERAPI_IO_KEY", "test-key");
+    const s = stubFetch([
+      { match: /advanced_search/, response: { body: {
+        tweets: [tweet("9", "2026-08-20T12:00:00Z"), tweet("8", "2026-08-20T11:00:00Z")],
+        has_next_page: true, next_cursor: "PAGE2",
+      } } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await xAdapter.fetch({
+      sql: sql.db, monitor: monitorWith({ limits: { max_pages_per_fetch: 1 } }),
+      stream: { stream: "search/t1", target: target() }, cursor: "1000", cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    const values = debounceQuery(sql);
+    expect(values[3]).toBe("search/t1");
+    expect(values[4]).toBe("search/t1");
+  });
+
+  it("Reddit's page-cap hold debounces on its stream", async () => {
+    vi.stubEnv("REDDIT_CLIENT_ID", "cid");
+    vi.stubEnv("REDDIT_CLIENT_SECRET", "sec");
+    vi.stubEnv("REDDIT_USERNAME", "user");
+    vi.stubEnv("REDDIT_PASSWORD", "pw");
+    const cursorSecs = 1_787_000_000;
+    const post = (id: string, createdSecs: number) => ({
+      kind: "t3",
+      data: { id, name: `t3_${id}`, title: `post ${id}`, selftext: "body text here", author: "someone",
+        created_utc: createdSecs, permalink: `/r/x/comments/${id}/`, subreddit: "x", score: 1, num_comments: 0 },
+    });
+    const s = stubFetch([
+      { match: /access_token/, response: { body: { access_token: "tok", expires_in: 3600 } } },
+      { match: /r\/analytics\/new/, response: { body: { data: {
+        children: [post("a", cursorSecs + 300), post("b", cursorSecs + 200)], after: "t3_b",
+      } } } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await redditAdapter.fetch({
+      sql: sql.db, monitor: monitorWith({ limits: { max_pages_per_fetch: 1 } }),
+      stream: { stream: "subreddit/t1", target: target({ source: "reddit", kind: "subreddit", value: "analytics" }) },
+      cursor: String(cursorSecs), cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    expect(debounceQuery(sql)[3]).toBe("subreddit/t1");
+  });
+
+  const video = (id: string, iso: string) => ({
+    id: { videoId: id },
+    snippet: { publishedAt: iso, title: `video ${id}`, description: "a description", channelTitle: "c", channelId: "UC1",
+      resourceId: { videoId: id } },
+  });
+
+  it("YouTube's channel (uploads) page-cap hold debounces on its stream", async () => {
+    vi.stubEnv("YOUTUBE_API_KEY", "yt-key");
+    const s = stubFetch([
+      { match: /\/channels\?/, response: { body: { items: [{ contentDetails: { relatedPlaylists: { uploads: "UUabc" } } }] } } },
+      { match: /\/playlistItems\?/, response: { body: { items: [video("v1", "2026-08-21T00:00:00Z")], nextPageToken: "P2" } } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await youtubeAdapter.fetch({
+      sql: sql.db, monitor: monitorWith({ limits: { max_pages_per_fetch: 1 } }),
+      stream: { stream: "channel/t1", target: target({ source: "youtube", kind: "channel", value: "UCabc" }) },
+      cursor: "2026-08-20T00:00:00.000Z", cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    expect(debounceQuery(sql)[3]).toBe("channel/t1");
+  });
+
+  it("YouTube's keyword-search remainder debounces on its stream", async () => {
+    vi.stubEnv("YOUTUBE_API_KEY", "yt-key");
+    const s = stubFetch([
+      { match: /\/search\?/, response: { body: { items: [video("v2", "2026-08-21T00:00:00Z")], nextPageToken: "P2" } } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await youtubeAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(),
+      stream: { stream: "search/t1", target: target({ source: "youtube", kind: "keyword", value: "acme" }) },
+      cursor: "2026-08-20T00:00:00.000Z", cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    expect((r.cursorMeta as { pending_until: string }).pending_until).toBe("2026-08-21T00:00:00.000Z");
+    expect(debounceQuery(sql)[3]).toBe("search/t1");
   });
 });

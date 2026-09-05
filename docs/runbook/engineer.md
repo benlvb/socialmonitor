@@ -3,7 +3,7 @@
 ## What this is
 A pnpm monorepo: Next.js web (`apps/web`, Vercel), a queue-consuming worker
 (`packages/pipeline`, Railway/Docker), Supabase as database + pgmq queue + pg_cron
-producer + Vault + auth. `SPEC.md` records the 22 design decisions (D1–D22); this file is
+producer + Vault + auth. `SPEC.md` records the 23 design decisions (D1–D23); this file is
 the working knowledge on top of it.
 
 ## Data flow (one sentence each)
@@ -53,9 +53,11 @@ Implement `SourceAdapter` (`adapters/types.ts`): `status`, `testConnection`,
 `streams(monitor, targets)`, `fetch(ctx)` (+ optional `refreshMetrics`), throwing the
 typed errors. Add fixtures (`fixtures/<source>.json`) replayed on first-run in fixture
 mode, register in `adapters/registry.ts`, add env keys to `credentials.ts` ENV_KEYS +
-`.env.example`, a card in the Connections page, target kinds in `shared/constants.ts`
-TARGET_KINDS, and a categorical color slot in `globals.css`/`charts.tsx` (fixed order —
-run the dataviz validator on any palette change).
+`.env.example` and a card in the Connections page (skip both for a credential-less
+source such as `appstore` — `status()` just returns configured), target kinds in
+`shared/constants.ts` TARGET_KINDS, a migration widening the `targets` check constraints
+(00006 is the pattern), and a categorical color slot in `globals.css`/`charts.tsx` (fixed
+order — validate with the `dataviz` skill's `validate_palette.js`).
 
 ## Adding an /ask tool
 `apps/web/lib/ask-tools.ts`: add the def (name/description/JSON schema) and the case in
@@ -79,7 +81,10 @@ loop, gating, and usage recording come for free.
 runner's hold/advance/breaker decisions with the repo layer mocked;
 `test/adapter-cursors.test.ts` and `test/telegram-cursor.test.ts` drive the real adapters
 against a scripted `fetch` and a fake `sql` (`test/helpers/fake-sql.ts`) to assert what
-each source does with an incomplete window. Every one of those cases is a bug an audit
+each source does with an incomplete window. The fake `sql` records query text and returns
+`[]` for anything unstubbed — it never validates SQL, so a malformed query or a wrong
+`WHERE` scope passes every test; prove new SQL against a real Postgres (the Supabase
+image in Docker applies the whole migration chain). Every one of those cases is a bug an audit
 found. When you change cursor logic, **mutation-test your test**: re-introduce the bug,
 watch the named test fail, restore, watch it pass. A cursor test that cannot fail is
 decoration. Live-source changes get a shakedown

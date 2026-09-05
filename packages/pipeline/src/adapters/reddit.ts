@@ -241,7 +241,7 @@ export const redditAdapter: SourceAdapter = {
       after = data.data.after;
     }
 
-    if (!completed && !(await hasEventToday(sql, monitor.id, "coverage_gap"))) {
+    if (!completed && !(await hasEventToday(sql, monitor.id, "coverage_gap", stream.stream))) {
       await logEvent(sql, {
         monitorId: monitor.id,
         source: "reddit",
