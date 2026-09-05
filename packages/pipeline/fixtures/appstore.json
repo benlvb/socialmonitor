@@ -35,7 +35,7 @@
   {
     "id": { "label": "14500000002" },
     "title": { "label": "👎" },
-    "content": { "label": "" },
+    "content": { "label": "👎" },
     "updated": { "label": "2026-08-20T22:11:09-07:00" },
     "author": { "name": { "label": "oxicc" }, "uri": { "label": "https://itunes.apple.com/us/reviews/id9004" } },
     "im:rating": { "label": "1" },

@@ -9,7 +9,9 @@ the web app; the worker and cron run themselves.
 ## Daily operation
 1. **Telegram channel first** — if nothing alerted, the pipeline is healthy. You are
    paged for `breaker_tripped`, `budget_paused`, `mass_failure`,
-   `canary_message_content`, `summary_failed`, `summary_truncated`, **and any
+   `canary_message_content`, `summary_failed`, `summary_truncated`, `coverage_lost`
+   (App Store: more than 500 new reviews in one storefront since the last run — Apple
+   exposes nothing older, so those are gone), **and any
    error-level event** — which also covers `pooler_misconfigured`, `job_poisoned`, and
    `partition_maintenance_failed` (the last is raised inside pg_cron and reaches you via
    the worker's 5-minute global-event watch, since it belongs to no monitor).

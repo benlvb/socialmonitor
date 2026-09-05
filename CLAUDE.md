@@ -7,10 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `socialmonitor` — configurable multi-source social monitoring: X, Reddit, YouTube,
 Telegram, Discord, App Store reviews (credential-less) → LLM classification (Haiku, Batch API) → deduped **themes** →
 dashboard / `/ask` chat / weekly summaries (Sonnet) / Telegram alerts. Single-operator,
-self-hosted, MIT. **`SPEC.md` is the source of truth** (22 interview-confirmed decisions,
-D1–D22); read it before designing anything. `docs/runbook/engineer.md` holds the working
+self-hosted, MIT. **`SPEC.md` is the source of truth** (23 confirmed decisions,
+D1–D23); read it before designing anything. `docs/runbook/engineer.md` holds the working
 invariants; `PROGRESS.md` is the checkpoint log. Status: complete and audited (three
-review passes, 95 tests) but **never run against live traffic** — every adapter was
+review passes, 97 tests) but **never run against live traffic** — every adapter was
 verified on recorded fixtures only.
 
 ## Commands
@@ -132,8 +132,8 @@ first run per stream.
 4. `apps/web`: a card in `connections/page.tsx` `CARDS` + `INTEGRATION_TO_SOURCE` in
    `connections/actions.ts`; a rewind branch in `ops-actions.ts` `backfill()` (see the
    cursor section); a fixed color slot (`SOURCE_VAR` in `components/charts.tsx` +
-   `--series-N` in `globals.css`, light and dark) — run the dataviz validator on any
-   palette change; `serverExternalPackages` in `apps/web/next.config.ts` if the adapter
+   `--series-N` in `globals.css`, light and dark) — validate any palette change with the
+   `dataviz` skill's `scripts/validate_palette.js` (it is not in this repo); `serverExternalPackages` in `apps/web/next.config.ts` if the adapter
    pulls a Node-native SDK (the web build statically imports the whole adapter registry
    through `getAdapter`).
 5. Tests: parse test in `test/adapters.test.ts` (fixture mode, `sql = null`) and a cursor

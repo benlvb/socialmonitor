@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SystemicError, parseMonitorConfig } from "@socialmonitor/shared";
+import { SystemicError, TransientError, parseMonitorConfig } from "@socialmonitor/shared";
 import { fakeSql, stubFetch } from "./helpers/fake-sql";
 import type { MonitorRow, TargetRow } from "../src/db/repos";
 import { xAdapter } from "../src/adapters/x";
@@ -364,8 +364,8 @@ describe("App Store cursor semantics", () => {
     feed(Array.from({ length: 50 }, (_, k) => review(100_000 - page * 100 - k, iso(10_000 - page * 100 - k))));
   const appTarget = target({ source: "appstore", kind: "app", value: "310633997" });
   const streamDef = { stream: "reviews/us/t1", target: appTarget };
-  const gapEvents = (sql: ReturnType<typeof fakeSql>) =>
-    sql.calls.filter((c) => /insert into pipeline_events/.test(c.text) && c.values.includes("coverage_gap"));
+  const eventsOfKind = (sql: ReturnType<typeof fakeSql>, kind: string) =>
+    sql.calls.filter((c) => /insert into pipeline_events/.test(c.text) && c.values.includes(kind));
 
   it("forward-only first sync: records now, fetches nothing", async () => {
     const s = stubFetch([]);
@@ -392,18 +392,37 @@ describe("App Store cursor semantics", () => {
     expect(s.urls[0]).toContain("/us/rss/customerreviews/id=310633997/sortBy=mostRecent/page=1/json");
   });
 
-  it("our own page cap with pages remaining HOLDS the cursor and warns", async () => {
-    const s = stubFetch([{ match: /page=1\/json/, response: { body: fullPage(1) } }]);
+  it("max_pages_per_fetch does not apply: the walk runs to completion inside Apple's cap", async () => {
+    // A smaller cap could never converge on a busy backfill (review S2): two
+    // runs would return the same 50 with the cursor held, forever.
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: fullPage(1) } },
+      { match: /page=2\/json/, response: { body: feed([review(7, iso(5)), review(1, iso(-60))]) } },
+    ]);
     restore = s.restore;
     const sql = fakeSql();
     const r = await appstoreAdapter.fetch({
       sql: sql.db, monitor: monitorWith({ limits: { max_pages_per_fetch: 1 } }),
       stream: streamDef, cursor: CURSOR, cursorMeta: {},
     });
-    expect(r.items).toHaveLength(50);
-    expect(r.nextCursor).toBeNull(); // the regression: advancing here orphans pages 2..n
-    expect(s.urls).toHaveLength(1);
-    expect(gapEvents(sql)).toHaveLength(1);
+    expect(r.items).toHaveLength(51);
+    expect(r.nextCursor).toBe(iso(10_000 - 100));
+    expect(s.urls).toHaveLength(2);
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0);
+  });
+
+  it("a NEW review in the cursor's own second is kept, not skipped as covered", async () => {
+    // `updated` is second-granular: review 4 lands at exactly the cursor set by
+    // review 3 one run earlier. `<=` lost it permanently (review F1).
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: feed([review(4, CURSOR), review(1, iso(-60))]) } },
+    ]);
+    restore = s.restore;
+    const r = await appstoreAdapter.fetch({
+      sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items.map((i) => i.externalId)).toEqual(["4"]);
+    expect(r.nextCursor).toBe(CURSOR);
   });
 
   it("a short page means the feed is exhausted: window covered, cursor advances", async () => {
@@ -420,10 +439,10 @@ describe("App Store cursor semantics", () => {
     expect(r.items).toHaveLength(52);
     expect(r.nextCursor).toBe(iso(10_000 - 100));
     expect(s.urls).toHaveLength(2);
-    expect(gapEvents(sql)).toHaveLength(0);
+    expect(eventsOfKind(sql, "coverage_lost")).toHaveLength(0);
   });
 
-  it("Apple's 10-page cap is lossy-but-covered: cursor ADVANCES with a coverage_gap warning", async () => {
+  it("Apple's 10-page cap is lossy-but-covered: cursor ADVANCES with a coverage_lost error", async () => {
     const s = stubFetch(
       Array.from({ length: 10 }, (_, k) => ({
         match: new RegExp(`page=${k + 1}/json`), response: { body: fullPage(k + 1) },
@@ -440,23 +459,46 @@ describe("App Store cursor semantics", () => {
     expect(r.nextCursor).toBe(iso(10_000 - 100));
     expect(s.urls).toHaveLength(10);
     expect(s.urls.some((u) => /page=11\//.test(u))).toBe(false);
-    const gaps = gapEvents(sql);
-    expect(gaps).toHaveLength(1);
-    expect(String(gaps[0]!.values.find((v) => typeof v === "string" && /unreachable/.test(v)))).toContain("500");
+    const lost = eventsOfKind(sql, "coverage_lost");
+    expect(lost).toHaveLength(1);
+    expect(lost[0]!.values).toContain("error");
+    expect(String(lost[0]!.values.find((v) => typeof v === "string" && /unreachable/.test(v)))).toContain("500");
+    // Debounced per STREAM, not per monitor: another storefront or source's
+    // advisory gap must not silence a loss on this one (review F2).
+    const debounce = sql.calls.find((c) => /from pipeline_events/.test(c.text) && c.values.includes("coverage_lost"));
+    expect(debounce?.values).toContain("reviews/us/t1");
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0);
   });
 
-  it("a 400 past page 1 is the end of the feed, not an error", async () => {
+  it("Apple's cap with every entry unparseable HOLDS and does not claim an advance", async () => {
+    const broken = (page: number) => feed(Array.from({ length: 50 }, (_, k) => ({ id: { label: String(page * 100 + k) }, title: { label: "no updated field" } })));
+    const s = stubFetch(
+      Array.from({ length: 10 }, (_, k) => ({ match: new RegExp(`page=${k + 1}/json`), response: { body: broken(k + 1) } })),
+    );
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(0);
+    expect(r.nextCursor).toBeNull();
+    expect(r.droppedCount).toBe(500);
+    expect(eventsOfKind(sql, "coverage_lost")).toHaveLength(0); // review F3: no "cursor advanced" while holding
+  });
+
+  it("a 400 past page 1 is ambiguous (feed end vs hiccup): transient, cursor held", async () => {
+    // Advancing here could skip reviews Apple failed to serve (review S6).
     const s = stubFetch([
       { match: /page=1\/json/, response: { body: fullPage(1) } },
       { match: /page=2\/json/, response: { status: 400, body: "" } },
     ]);
     restore = s.restore;
-    const r = await appstoreAdapter.fetch({
-      sql: fakeSql().db, monitor: monitorWith({ limits: { max_pages_per_fetch: 5 } }),
-      stream: streamDef, cursor: CURSOR, cursorMeta: {},
-    });
-    expect(r.items).toHaveLength(50);
-    expect(r.nextCursor).toBe(iso(10_000 - 100));
+    await expect(
+      appstoreAdapter.fetch({
+        sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+      }),
+    ).rejects.toThrow(TransientError);
+    expect(s.urls).toHaveLength(2);
   });
 
   it("a 400 on page 1 is a bad storefront or app: systemic (breaker), cursor untouched", async () => {
@@ -483,6 +525,11 @@ describe("App Store cursor semantics", () => {
     expect(r.items.map((i) => i.externalId)).toEqual(["8"]);
     expect(r.nextCursor).toBe(iso(120));
     expect(r.droppedCount).toBeUndefined(); // an edit is not a parse failure
+    // Scoped to this stream: an id stored by another storefront must not
+    // suppress it here (review S1).
+    const dedupe = sql.calls.find((c) => /from raw_items/.test(c.text));
+    expect(dedupe?.text).toContain("stream = ?");
+    expect(dedupe?.values).toContain("reviews/us/t1");
   });
 
   it("expands one app target into one stream per configured storefront, uuid last", () => {

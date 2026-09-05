@@ -128,7 +128,7 @@ describe("appstore adapter (fixtures)", () => {
     expect(crash.authorHandle).toBe("sarah_d");
     // -07:00 offset in the feed must land as UTC
     expect(crash.postedAt.toISOString()).toBe("2026-08-22T01:40:12.000Z");
-    // emoji-only review keeps its title as content (prefilter decides later)
+    // title repeated as body is stored ONCE (review F5) — prefilter decides later
     expect(r.items.find((i) => i.externalId === "14500000002")!.content).toBe("👎");
     // cursor = newest `updated`
     expect(r.nextCursor).toBe("2026-08-22T16:15:00.000Z");
@@ -137,10 +137,11 @@ describe("appstore adapter (fixtures)", () => {
     const r = await appstoreAdapter.fetch({ sql, monitor, stream: { stream: "reviews/us/t1" }, cursor: "2026-08-22T16:15:00.000Z", cursorMeta: {} });
     expect(r.items).toEqual([]);
   });
-  it("is configured with no credentials at all", async () => {
+  it("is configured with no credentials at all, and testConnection makes no request", async () => {
     delete process.env.FIXTURE_MODE;
     try {
       expect((await appstoreAdapter.status(sql, monitor.owner_id)).configured).toBe(true);
+      expect((await appstoreAdapter.testConnection(sql, monitor.owner_id)).ok).toBe(true);
     } finally {
       process.env.FIXTURE_MODE = "1";
     }

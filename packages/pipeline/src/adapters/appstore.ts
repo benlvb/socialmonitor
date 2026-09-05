@@ -19,28 +19,30 @@ import { fixtureMode, loadFixture } from "./fixtures";
  * 50 entries per page, newest-first by `updated`, hard-capped at page 10 (page
  * 11 answers 400) — i.e. the newest 500 reviews per storefront. Some storefronts
  * return an empty feed. Review ids are numeric and increase with time. `updated`
- * is the review's creation time until the author edits it.
+ * is second-granular and is the review's creation time until the author edits.
  *
  * Streams: one per (target, storefront) named `reviews/<cc>/<target uuid>`; the
  * uuid suffix keeps the target-deletion cleanup (`stream like '%/<id>'`) working.
  *
  * Cursor: ISO `updated` of the newest review seen. Walk newest-first until an
- * entry at or before the cursor appears (window covered), the feed runs out
- * (short page), or Apple's page cap — which also counts as covered: nothing
- * older is obtainable, so the cursor ADVANCES with a coverage_gap warning
- * instead of holding forever. Only our own `limits.max_pages_per_fetch` holds.
+ * entry STRICTLY older than the cursor appears (window covered), the feed runs
+ * out (short page), or Apple's page cap. The cap also counts as covered:
+ * nothing older is obtainable, so the cursor ADVANCES and a `coverage_lost`
+ * error records what was skipped — holding there would re-walk 10 pages every
+ * tick forever. Apple's cap bounds the walk to 500 reviews, so the shared
+ * `limits.max_pages_per_fetch` knob (built for metered APIs) does not apply; a
+ * smaller cap could never converge on a busy app's backfill.
  *
  * Edited reviews resurface with a new `updated` but the same id. The PK on
- * raw_items includes posted_at, so a second row would double-count the author;
- * ids already stored are dropped and the first-seen text is kept.
+ * raw_items includes posted_at, so a second row would double the item count
+ * that ranks the dedup shortlist; ids already stored on this stream are
+ * dropped and the first-seen text is kept.
  */
 
 const RSS_HOST = "https://itunes.apple.com";
 const PAGE_SIZE = 50;
 /** Apple serves at most this many pages per storefront. */
 export const APPSTORE_FEED_PAGE_CAP = 10;
-/** A long-lived public app id, used only to prove the feed host answers. */
-const PROBE_APP_ID = "310633997";
 
 interface RssLabel {
   label?: string;
@@ -92,7 +94,9 @@ export function parseReview(
   if (Number.isNaN(postedAt.getTime())) return null;
   const title = (e.title?.label ?? "").trim();
   const body = (e.content?.label ?? "").trim();
-  const content = [title, body].filter(Boolean).join("\n\n");
+  // 5.6% of live reviews repeat the title as the body ("👎" / "👎"); joining
+  // them would double the text and defeat prefilter.min_chars (review F5).
+  const content = title && body && title === body ? title : [title, body].filter(Boolean).join("\n\n");
   if (!content) return null;
   const rating = Number(e["im:rating"]?.label);
   const hasRating = Number.isFinite(rating) && rating >= 1 && rating <= 5;
@@ -167,14 +171,9 @@ export const appstoreAdapter: SourceAdapter = {
   },
 
   async testConnection() {
-    try {
-      const { status, feed } = await fetchPage("us", PROBE_APP_ID, 1);
-      return status === 200 && feed
-        ? { ok: true, message: "customer-reviews feed reachable" }
-        : { ok: false, message: `feed returned ${status}` };
-    } catch (err) {
-      return { ok: false, message: String(err) };
-    }
+    // Nothing to test: there is no credential and no Connections card calls
+    // this. The feed itself is exercised on the first fetch of any target.
+    return { ok: true, message: "public feed — no credentials required" };
   },
 
   streams(monitor: MonitorRow, targets: TargetRow[]): StreamDef[] {
@@ -210,21 +209,21 @@ export const appstoreAdapter: SourceAdapter = {
       );
     }
     const cursorMs = new Date(cursor).getTime();
-    const maxPages = Math.min(monitor.config.limits.max_pages_per_fetch, APPSTORE_FEED_PAGE_CAP);
 
     const newer: RawItem[] = [];
     let dropped = 0;
-    let completed = false;
     let feedCapped = false;
 
-    for (let page = 1; page <= maxPages; page++) {
+    for (let page = 1; page <= APPSTORE_FEED_PAGE_CAP; page++) {
       const { status, feed } = await fetchPage(cc, appId, page);
       if (status === 400 || !feed) {
-        // Page 1 rejected = unknown storefront/app (operator error → breaker);
-        // a later page rejected = the feed ended early → window covered.
+        // Page 1 rejected = unknown storefront/app (operator error → breaker).
         if (page === 1) throw new SystemicError(`appstore feed rejected ${cc}/${appId} (400)`);
-        completed = true;
-        break;
+        // Past the last page Apple answers 200 with zero entries (probed on
+        // apps with 0–1 reviews), never 400 — so a 400 mid-walk is a hiccup,
+        // not the end of the feed. Hold rather than advance over reviews that
+        // may exist; refetching the pages already walked is idempotent (review S6).
+        throw new TransientError(`appstore feed answered 400 on page ${page} after ${page - 1} full page(s); cursor held`);
       }
       const entries = entriesOf(feed);
       let reachedCursor = false;
@@ -234,64 +233,54 @@ export const appstoreAdapter: SourceAdapter = {
           dropped++;
           continue;
         }
-        if (item.postedAt.getTime() <= cursorMs) {
-          reachedCursor = true; // walked back to the cursor: window covered
+        // Strictly older ends the walk. An entry in the cursor's own second may
+        // be a NEW review (`updated` is second-granular); keep it and let the
+        // dedupe below drop it if it was already stored (review F1).
+        if (item.postedAt.getTime() < cursorMs) {
+          reachedCursor = true;
           continue;
         }
         newer.push(item);
       }
-      if (reachedCursor || entries.length < PAGE_SIZE) {
-        completed = true;
-        break;
-      }
-      if (page === APPSTORE_FEED_PAGE_CAP) {
-        // Apple has nothing older to give: covered, but lossy — say so.
-        completed = true;
-        feedCapped = true;
-        break;
-      }
+      if (reachedCursor || entries.length < PAGE_SIZE) break;
+      if (page === APPSTORE_FEED_PAGE_CAP) feedCapped = true;
     }
 
     // The cursor advances over everything seen, edits included, so an edited
-    // review is not re-walked on every tick.
+    // review is not re-walked on every tick. null = nothing newer = hold.
     const nextCursor = newestIso(newer);
 
-    // Drop ids already stored (edits): a second row per edit would double-count.
+    // Drop ids already stored ON THIS STREAM (edits, the boundary review):
+    // a second row per edit would inflate the theme item count (review S1).
     let items = newer;
     if (newer.length > 0) {
       const ids = newer.map((i) => i.externalId);
       const rows = await sql`
         select external_id from raw_items
         where monitor_id = ${monitor.id} and source = 'appstore'
-          and external_id = any(${ids}::text[])`;
+          and stream = ${stream.stream} and external_id = any(${ids}::text[])`;
       const seen = new Set(rows.map((r) => r.external_id as string));
       if (seen.size > 0) items = newer.filter((i) => !seen.has(i.externalId));
     }
 
-    if (!completed && !(await hasEventToday(sql, monitor.id, "coverage_gap"))) {
+    // Lossy-but-covered: 500 reviews newer than the cursor and Apple has no
+    // page 11. Its own kind and a per-stream debounce, so an advisory
+    // coverage_gap from another source or storefront cannot silence it
+    // (review F2); only when the cursor really moves (review F3).
+    if (feedCapped && nextCursor !== null && !(await hasEventToday(sql, monitor.id, "coverage_lost", stream.stream))) {
       await logEvent(sql, {
         monitorId: monitor.id,
         source: "appstore",
         stream: stream.stream,
-        level: "warn",
-        kind: "coverage_gap",
-        message: `more than ${maxPages} feed pages since the cursor; cursor held, the remainder resumes next run (raise limits.max_pages_per_fetch, max ${APPSTORE_FEED_PAGE_CAP})`,
-      });
-    }
-    if (feedCapped && !(await hasEventToday(sql, monitor.id, "coverage_gap"))) {
-      await logEvent(sql, {
-        monitorId: monitor.id,
-        source: "appstore",
-        stream: stream.stream,
-        level: "warn",
-        kind: "coverage_gap",
-        message: `Apple's feed exposes only the newest ${PAGE_SIZE * APPSTORE_FEED_PAGE_CAP} reviews per storefront; ${newer.length} fetched, older reviews since the cursor are unreachable — cursor advanced`,
+        level: "error",
+        kind: "coverage_lost",
+        message: `Apple's feed exposes only the newest ${PAGE_SIZE * APPSTORE_FEED_PAGE_CAP} reviews per storefront and all of them were newer than the cursor; older reviews since the cursor are unreachable and the cursor advanced past them (shorten cadence_minutes.fetch for this app)`,
       });
     }
 
     return {
       items,
-      nextCursor: completed ? nextCursor : null,
+      nextCursor,
       ...(dropped > 0 ? { droppedCount: dropped } : {}),
     };
   },
