@@ -10,4 +10,9 @@ import { fileURLToPath } from "node:url";
  * `.env` (dockerignored) and every value comes from the platform.
  */
 const rootEnv = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../.env");
-if (existsSync(rootEnv)) process.loadEnvFile(rootEnv);
+try {
+  if (existsSync(rootEnv)) process.loadEnvFile(rootEnv);
+} catch {
+  // Unreadable or vanished file: the worker must still start (template-first —
+  // an unconfigured DATABASE_URL is a state, not a crash).
+}
