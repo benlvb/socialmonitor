@@ -674,6 +674,42 @@ describe("App Store cursor semantics", () => {
     expect(lastPageOf({ feed: { link: [{ attributes: { rel: "next", href: "https://x/page=2/json" } }] } })).toBeNull();
     expect(lastPageOf({ feed: {} })).toBeNull();
     expect(lastPageOf({})).toBeNull();
+    // A malformed element must not throw: the runner would read it as systemic.
+    expect(lastPageOf({ feed: { link: [null as unknown as { attributes?: { rel?: string; href?: string } }] } })).toBeNull();
+  });
+
+  it("an unserved storefront (live shape: five links with EMPTY hrefs, no entries) holds quietly", async () => {
+    // Verbatim shape from storefronts Apple does not serve (probed li/ad/la):
+    // links are present but carry no page number, so `last` is unusable.
+    const unserved = {
+      feed: {
+        link: ["alternate", "self", "first", "last", "previous", "next"].map((rel) => ({ attributes: { rel, href: "" } })),
+      },
+    };
+    const s = stubFetch([{ match: /page=1\/json/, response: { body: unserved } }]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: { stream: "reviews/li/t1", target: appTarget }, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toEqual([]);
+    expect(r.nextCursor).toBeNull();
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0); // not a daily warning per dead storefront
+    expect(s.urls).toHaveLength(1);
+  });
+
+  it("a page 10 with MORE than 50 entries still counts as the cap (>= guard)", async () => {
+    const s = stubFetch([
+      ...Array.from({ length: 9 }, (_, k) => ({ match: new RegExp(`page=${k + 1}/json`), response: { body: linked(fullPage(k + 1).feed.entry, k + 1, 10) } })),
+      { match: /page=10\/json/, response: { body: linked([...(fullPage(10).feed.entry as unknown[]), review(1, iso(1))], 10, 10) } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(501);
+    expect(eventsOfKind(sql, "coverage_lost")).toHaveLength(1);
   });
 
   it("expands one app target into one stream per configured storefront, uuid last", () => {

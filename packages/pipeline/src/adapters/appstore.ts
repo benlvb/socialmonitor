@@ -27,8 +27,10 @@ import { fixtureMode, loadFixture } from "./fixtures";
  * Termination: a healthy page carries `link[rel=last]`; a genuinely exhausted
  * page past the end still carries it (`last` < page), while Apple's occasional
  * TRANSIENT empty page mid-feed (probed: 4 of 30 app×storefront pairs, gone on
- * retry) carries no links at all. So: a page at or past `last` ends the walk; an
- * empty or short page BELOW `last`, or with no links at all, is an anomaly —
+ * retry) carries no links at all, and a storefront Apple does not serve returns
+ * links whose hrefs are empty strings (no page number). So: a page at or past
+ * `last` ends the walk; an empty or short page BELOW `last`, or with no usable
+ * `last` at all, is an anomaly —
  * the items already parsed are stored, the cursor HOLDS, and a `coverage_gap`
  * warning is logged, because advancing would skip the missing page for good.
  *
@@ -78,7 +80,7 @@ export function lastPageOf(feed: RssFeed): number | null {
   const raw = feed.feed?.link;
   if (!raw) return null;
   const links = Array.isArray(raw) ? raw : [raw];
-  const last = links.find((l) => l.attributes?.rel === "last");
+  const last = links.find((l) => l?.attributes?.rel === "last");
   // The live href carries `page=` twice (`/page=10/` in the path, `...page=2/json`
   // in the query) — anchor on the path segment.
   const m = last?.attributes?.href?.match(/\/page=(\d+)\//);
@@ -293,7 +295,7 @@ export const appstoreAdapter: SourceAdapter = {
       // reports last=10, the cap itself, so the break would strand the flag and
       // the lossy advance would go unrecorded (review N1, round 3). A short
       // page 10 is a clean end, not a cap.
-      if (page === APPSTORE_FEED_PAGE_CAP && entries.length === PAGE_SIZE) feedCapped = true;
+      if (page === APPSTORE_FEED_PAGE_CAP && entries.length >= PAGE_SIZE) feedCapped = true;
       if (lastPage !== null && page >= lastPage) break; // the feed says this is the last page
       if (entries.length < PAGE_SIZE) {
         // Short page: the end when the feed carries no page count, an anomaly
