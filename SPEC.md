@@ -36,6 +36,7 @@ This file — not the original documents — is the source of truth.
 | D20 | Monitor config DB-backed: structured form for common fields, schema-validated JSON editor for taxonomy/noise-rules/examples; JSON import/export. |
 | D21 | Hosting: Railway (worker), Vercel (web), Supabase (DB + queue + cron + vault). GitHub repo `benlvb/socialmonitor`. |
 | D22 | **Template-first**: entire system built with credential placeholders. Every adapter reports configured/unconfigured; unconfigured streams skip cleanly. Fixture mode drives the real pipeline end-to-end without live accounts. Plugging a key into the connections page activates a source with no deploy. |
+| D23 | **App Store reviews** (added 2026-09-05): a credential-less adapter over Apple's public customer-reviews feed — any app, yours or a competitor's. Feed reality: 50 reviews/page, hard cap at page 10 (newest 500 per storefront), some storefronts empty. Storefronts are per-monitor config (`limits.appstore_storefronts`); one stream per (app target × storefront). Cursor = newest `updated`; Apple's cap counts as *covered* (advance + `coverage_gap`), only our own page cap holds. Edited reviews (same id, new `updated`) are dropped, first-seen text kept. Star rating travels in item context to the classifier; no impressions (helpful votes = engagement). The own-app App Store Connect API and Google Play (official API for own apps, scraper for others) are later adapters. |
 
 ## 1. Architecture
 
@@ -110,8 +111,8 @@ CREATE TABLE monitors (
 CREATE TABLE targets (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   monitor_id uuid NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
-  source text NOT NULL,          -- x | reddit | youtube | telegram | discord
-  kind text NOT NULL,            -- account | keyword | subreddit | user | channel | guild
+  source text NOT NULL,          -- x | reddit | youtube | telegram | discord | appstore
+  kind text NOT NULL,            -- account | keyword | subreddit | user | channel | guild | app
   value text NOT NULL,           -- handle, keyword, subreddit name, channel username, guild id…
   enabled boolean NOT NULL DEFAULT true,
   config jsonb NOT NULL DEFAULT '{}',
@@ -302,6 +303,7 @@ guarantees single-flight per stream even with multiple workers.
     reddit_comment_max_post_age_days: number,    // 3
     reddit_comment_depth: number,                // 1
     metrics_checkpoints: string[],               // ['1h','24h','7d']
+    appstore_storefronts: string[],              // ['us'] — ISO country codes (D23)
   },
   model: { classify?: string, narrate?: string },  // overrides; defaults from env
 }
@@ -348,6 +350,10 @@ Per-source notes (v1):
   sync; reply-chain backfill depth 3 into `context`; linear neighbors (12 msgs / 90 min)
   computed at classify time from raw_items. The MESSAGE_CONTENT canary: N consecutive syncs where >0 messages all have
   empty content ⇒ `canary_message_content` event + alert.
+- **appstore** (public feed, no credential — D23): `reviews/<cc>/<target>` per app target
+  × storefront. Newest-first walk of `/<cc>/rss/customerreviews/id=<app>/sortBy=mostRecent/
+  page=<n>/json` until the cursor (ISO `updated`), a short page, or Apple's 10-page cap.
+  Content = title + body; rating + app version into `context`; helpful votes → engagement.
 
 Fixture mode (D22): each adapter has `fixtures/*.json` of realistic payloads; a
 `FIXTURE_MODE=1` worker run replays them through the real parse→store→classify→themes

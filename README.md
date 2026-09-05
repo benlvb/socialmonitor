@@ -19,8 +19,8 @@ deploy, no code change.
 ## Status — read this before you rely on it
 
 The system is **complete but not yet battle-tested against live traffic.** All
-five sources, the classifier, the dashboard, `/ask`, and weekly summaries are
-built; the suite is green (78 tests, including mutation-verified cursor tests);
+six sources, the classifier, the dashboard, `/ask`, and weekly summaries are
+built; the suite is green (95 tests, including mutation-verified cursor tests);
 three review passes (one automated, two full-repo model audits) have been
 applied. What has *not* happened is a production run: the adapters were
 verified against recorded fixtures and each platform's documented behaviour,
@@ -36,7 +36,7 @@ There is no hosted version. You run your own.
 ## How it works
 
 ```
-  X · Reddit · YouTube · Telegram · Discord        (any subset, per monitor)
+  X · Reddit · YouTube · Telegram · Discord · App Store   (any subset, per monitor)
         │ fetch (cursored, budgeted)
         ▼
   raw_items ──► LLM classifier ──► themes (deduped, ranked by unique authors)
@@ -65,7 +65,7 @@ There is no hosted version. You run your own.
 ```sh
 git clone https://github.com/benlvb/socialmonitor && cd socialmonitor
 pnpm install
-pnpm typecheck && pnpm test && pnpm build   # 41 tests, all packages
+pnpm typecheck && pnpm test && pnpm build   # 95 tests, all packages
 cp .env.example .env                        # everything blank is a valid state
 pnpm --filter @socialmonitor/pipeline dev   # worker starts, reports "idle (unconfigured)"
 pnpm --filter web dev                       # http://localhost:3000 shows the setup notice
@@ -82,10 +82,11 @@ Each step is independent. Stop at any point; everything done so far keeps workin
 ### 1. Supabase (the backbone)
 
 1. Create a project at [supabase.com](https://supabase.com) → note the project ref
-2. Apply the migrations — five files, applied in order
+2. Apply the migrations — six files, applied in order
    (`00001` schema + RLS + pgmq queue + pg_cron producer · `00002` dashboard aggregate
    functions · `00003` partition RLS + producer hardening + event scoping ·
-   `00004` classification-call accounting · `00005` signup allowlist):
+   `00004` classification-call accounting · `00005` signup allowlist · `00006` App Store
+   target kinds):
    ```sh
    cd packages/db
    npx supabase login
@@ -136,8 +137,8 @@ budget stop.
 FIXTURE_MODE=1 pnpm --filter @socialmonitor/pipeline dev
 ```
 
-With Supabase configured and a monitor created (see below), fixture payloads for all five
-platforms flow through the **real** pipeline — fetch → classify → themes — and populate
+With Supabase configured and a monitor created (see below), fixture payloads for all six
+sources flow through the **real** pipeline — fetch → classify → themes — and populate
 the dashboard and /ask. Without an Anthropic key a deterministic stub classifier is used;
 with one, real classification runs on the fixtures.
 
@@ -163,6 +164,7 @@ button per integration) or as env vars — Vault wins when both exist.
 | **YouTube** | Google Cloud Console → enable **YouTube Data API v3** → API key. Free 10k units/day; keyword search costs 100/query and is budgeted per monitor | `YOUTUBE_API_KEY` |
 | **Telegram** | A **dedicated account on a spare number** (never your personal one). Get `api_id`/`api_hash` at [my.telegram.org](https://my.telegram.org), then run the session generator: `TELEGRAM_MTPROTO_API_ID=… TELEGRAM_MTPROTO_API_HASH=… pnpm --filter @socialmonitor/pipeline exec tsx ../../scripts/telegram-session.ts`. One session string = one consumer: don't run two worker replicas on it (Telegram invalidates duplicated sessions). | `TELEGRAM_MTPROTO_API_ID` `TELEGRAM_MTPROTO_API_HASH` `TELEGRAM_MTPROTO_SESSION` |
 | **Discord** | [discord.com/developers](https://discord.com/developers/applications) → bot → enable the **MESSAGE_CONTENT** privileged intent → invite to your server with channel-level view permissions | `DISCORD_BOT_TOKEN` |
+| **App Store** | Nothing — Apple's public customer-reviews feed, any app (yours or a competitor's). Newest **500 reviews per storefront**; storefronts per monitor in `limits.appstore_storefronts` (default `["us"]`) | — |
 | **Alerts** | BotFather → `/newbot` (a fresh bot). Add it to a private channel/group, post once, read the chat id from `https://api.telegram.org/bot<token>/getUpdates` | `TELEGRAM_NOTIFY_BOT_TOKEN` `TELEGRAM_NOTIFY_CHAT_ID` |
 
 ## Your first monitor
@@ -180,6 +182,7 @@ with [BRACKETED] placeholders to edit. Then on the settings page:
 | youtube | `channel` (@handle or UC… id), `keyword` |
 | telegram | `channel` (public username) |
 | discord | `guild` (server id — bot must be in it) |
+| appstore | `app` (numeric App Store id, or the app's App Store URL) |
 
 **Configuration JSON** — the classifier's brain. Every field is runtime-editable; the
 pipeline picks changes up on its next tick. The editor shows the fully-defaulted config;
@@ -218,6 +221,7 @@ the fields that matter most:
                 "transcripts": false,   // reserved (v2) — not implemented yet
                 "ask_tool_approval": false },
   "prefilter": { "min_chars": 8, "mute_patterns": ["giveaway"] },  // free filters before any LLM call
+  "limits":   { "appstore_storefronts": ["us", "gb"] },           // + per-source page/age caps
   "model": {}   // per-monitor overrides, e.g. {"classify": "claude-sonnet-5"}
 }
 ```
@@ -257,7 +261,7 @@ first sync. Watch the dashboard's **Pipeline health** panel.
 | `canary_message_content` alert | Discord returns messages with empty content — the MESSAGE_CONTENT intent was lost | Re-enable the intent in the Discord developer portal |
 | `mass_failure` alert | A classify batch processed items but classified zero | Check ANTHROPIC_API_KEY validity and the worker logs |
 | Items fetched but never classified | No Anthropic key, daily budget spent, or a batch is still processing (30-min cadence) | Dashboard budget tile + worker logs show which |
-| `coverage_gap` warning | More content in one window than the page cap allows; the cursor held and the remainder resumes next run | Nothing lost. If it persists, raise `limits.max_pages_per_fetch` or shorten `cadence_minutes.fetch` |
+| `coverage_gap` warning | More content in one window than the page cap allows; the cursor held and the remainder resumes next run | Nothing lost. If it persists, raise `limits.max_pages_per_fetch` or shorten `cadence_minutes.fetch`. App Store variant: Apple only exposes the newest 500 reviews per storefront, so the cursor advanced and the older remainder is unreachable — shorten the cadence for very busy apps |
 | `pooler_misconfigured` error | `DATABASE_URL` is the transaction pooler; advisory locks cannot work | Switch to the **Session pooler** string and restart the worker |
 | `summary_truncated` / `summary_failed` | The weekly narrative hit the token cap, or the job threw | Truncated: the stored summary may end mid-sentence — re-run happens next Monday, or clear its `weekly_summaries` row to regenerate. Failed: the dispatch marker is cleared automatically so the producer retries |
 | `batch_lost` warning | A pending classification batch became unrecoverable (expired after ~29 days, or a 404) | Self-healing — the id is cleared and the items resubmit on the next tick. Only investigate if it repeats |
@@ -280,7 +284,7 @@ pnpm --filter web dev                        # web app
 |---|---|
 | `packages/shared` | Zod schemas (monitor config, classification), constants, pure functions |
 | `packages/db` | Migrations (`supabase/migrations/`), postgres.js client |
-| `packages/pipeline` | Worker: queue consumer, 5 source adapters, classifier, summaries |
+| `packages/pipeline` | Worker: queue consumer, 6 source adapters, classifier, summaries |
 | `apps/web` | Next.js app: auth, connections, monitors, dashboard, /ask |
 
 Architecture rules that matter when extending (cursor contract, error classes, prompt

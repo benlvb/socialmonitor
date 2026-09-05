@@ -1,6 +1,7 @@
 # PROGRESS
 
 ## Done
+- 2026-09-05: App Store reviews adapter (D23) — first credential-less source. `appstore` adapter over Apple's public feed (probed live: 50/page, 10-page cap, some storefronts empty), per-monitor storefronts, `reviews/<cc>/<uuid>` streams, cursor on `updated` with Apple's cap treated as covered (advance + coverage_gap) vs our own cap (hold), edit dedupe against raw_items, rating + app version rendered into the classifier context, migration 00006 widening target constraints, sixth categorical chart slot (validated light + dark), fixture, README/SPEC updates. Cursor tests mutation-checked.
 - 2026-08-26: Cursor-behaviour integration tests (both audits' top recommendation). 29 new tests: runner contract (hold-on-failure, error-class routing, breaker skip/trip, nothing stored on throw) + adapter semantics for X (complete vs page-cap vs budget-stop windows, pending-window resume), Reddit (walk-back completion vs page-cap hold), Discord (per-channel cursors, per-channel failure isolation, canary holds everything, bot-only traffic, pruning, thread start) and Telegram (first-sync probe, ascending pagination, sender attribution, service-message drops). Each verified by MUTATION TESTING: the four original audit bugs were re-introduced and the matching tests failed, then passed again on restore. 78 tests total.
 - 2026-08-24: Fable 5 second-pass audit (22 findings; verified all 27 prior fixes individually correct — new failures were interaction seams between them). Fixed in 2 waves: A = activation blockers (unsupported JSON-schema keywords on the wire, data-plane signup allowlist, target-UUID churn resetting cursors on every settings save, per-source backfill regressions, zero-row-update ownership check); B = silent-failure class (contiguous-coverage cursors with coverage_gap events across X/Reddit/YouTube, systemic-vs-poison classify distinction, Telegram sender attribution, future-date cursor clamp, raw/classify dedupe, transaction-pooler probe, in-flight budget, thread cursors + pruning, thinking-token budgets, monitor purge, summary retry, worker crash guard, docs). 49 tests green.
 - 2026-08-24: Opus 5 full-repo audit (27 findings) fixed in 3 waves: security (partition RLS, session allowlist, producer survival, events scoping), data-loss cursor family (per-channel discord cursors, telegram ascending, comment streams, forward-only everywhere, canary holds), config truth + integrity (vault-aware anthropic/notifier, cost fallback, usage kinds, x API budget + mentions stream, theme recompute, matched validation, per-round approval gate w/ HMAC, proxy rename, dead knobs wired, docs drift). 46 tests green.
@@ -14,11 +15,11 @@
 - 2026-08-24: Spec interview complete (22 decisions, see SPEC.md §0). SPEC.md + CLAUDE.md written.
 
 ## In progress
-- Nothing. P0-P4 built, two full audits fixed, main clean at 7515785.
+- App Store reviews adapter on `feat/appstore-reviews-adapter` (PR pending). Google Play (official API for own apps + scraper for others) and the own-app App Store Connect transport are the next two sources.
 
 ## Next
 1. P5 activation (blocked on credentials — see README "Activation"): Supabase project +
-   `supabase db push` (5 migrations) -> Anthropic key -> Vercel (root `apps/web`) ->
+   `supabase db push` (6 migrations) -> Anthropic key -> Vercel (root `apps/web`) ->
    Railway (`railway.toml`) -> sources one at a time, each with a live shakedown.
 3. v2 features once data exists: authors & spikes dashboard + alert rules (needs 2-3
    weeks of baseline), review queue, Slack notifier, official X API adapter.

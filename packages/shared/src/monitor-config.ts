@@ -57,6 +57,12 @@ export const MonitorConfigSchema = z.object({
       reddit_comment_depth: z.number().int().min(1).max(3).default(1),
       metrics_checkpoints: z.array(z.enum(METRIC_CHECKPOINTS)).default(["1h", "24h", "7d"]),
       max_pages_per_fetch: z.number().int().min(1).max(10).default(3),
+      /** App Store storefronts (ISO country codes) each `app` target is read from (D23). */
+      appstore_storefronts: z
+        .array(z.string().regex(/^[a-z]{2}$/, "two-letter lowercase storefront code, e.g. us"))
+        .min(1)
+        .max(20)
+        .default(["us"]),
     })
     .prefault({}),
   prefilter: z

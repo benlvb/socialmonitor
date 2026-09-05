@@ -109,6 +109,8 @@ function backfillCursor(source: Source, days: number): string | null {
       return String(Math.floor(since.getTime() / 1000)); // epoch seconds
     case "youtube":
       return since.toISOString(); // publishedAfter
+    case "appstore":
+      return since.toISOString(); // newest-first walk back to this `updated`
     case "discord":
       return dateToSnowflake(since);
     case "telegram":

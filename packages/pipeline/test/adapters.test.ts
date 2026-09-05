@@ -7,6 +7,7 @@ import { redditAdapter } from "../src/adapters/reddit";
 import { youtubeAdapter } from "../src/adapters/youtube";
 import { telegramAdapter } from "../src/adapters/telegram";
 import { discordAdapter, datetimeToSnowflake, snowflakeToDatetime } from "../src/adapters/discord";
+import { appstoreAdapter, parseAppId } from "../src/adapters/appstore";
 
 const monitor: MonitorRow = {
   id: "00000000-0000-0000-0000-000000000001",
@@ -106,5 +107,49 @@ describe("discord adapter", () => {
     const channels = (r.cursorMeta as { channels: Record<string, string> }).channels;
     expect(channels["990001"]).toBe("1408100000000000002");
     expect(channels["990002"]).toBe("1408100000000000003");
+  });
+});
+
+describe("appstore adapter (fixtures)", () => {
+  it("parses reviews: title + body, rating in context and metrics, votes as engagement", async () => {
+    const r = await appstoreAdapter.fetch({ sql, monitor, stream: { stream: "reviews/us/t1" }, cursor: null, cursorMeta: {} });
+    expect(r.items.length).toBe(5);
+    const crash = r.items.find((i) => i.externalId === "14500000004")!;
+    expect(crash.source).toBe("appstore");
+    expect(crash.content.startsWith("Crashes on launch\n\n")).toBe(true);
+    expect(crash.content).toContain("crashes every time");
+    expect(crash.context.rating).toBe(1);
+    expect(crash.context.app_version).toBe("4.2.0");
+    expect(crash.context.channel_name).toBe("App Store (us)");
+    expect(crash.metrics.rating).toBe(1);
+    expect(crash.metrics.storefront).toBe("us");
+    expect(crash.engagement).toBe(12);
+    expect(crash.impressions).toBeNull();
+    expect(crash.authorHandle).toBe("sarah_d");
+    // -07:00 offset in the feed must land as UTC
+    expect(crash.postedAt.toISOString()).toBe("2026-08-22T01:40:12.000Z");
+    // emoji-only review keeps its title as content (prefilter decides later)
+    expect(r.items.find((i) => i.externalId === "14500000002")!.content).toBe("👎");
+    // cursor = newest `updated`
+    expect(r.nextCursor).toBe("2026-08-22T16:15:00.000Z");
+  });
+  it("second run with a cursor is quiet", async () => {
+    const r = await appstoreAdapter.fetch({ sql, monitor, stream: { stream: "reviews/us/t1" }, cursor: "2026-08-22T16:15:00.000Z", cursorMeta: {} });
+    expect(r.items).toEqual([]);
+  });
+  it("is configured with no credentials at all", async () => {
+    delete process.env.FIXTURE_MODE;
+    try {
+      expect((await appstoreAdapter.status(sql, monitor.owner_id)).configured).toBe(true);
+    } finally {
+      process.env.FIXTURE_MODE = "1";
+    }
+  });
+  it("parseAppId accepts ids and App Store URLs", () => {
+    expect(parseAppId("310633997")).toBe("310633997");
+    expect(parseAppId(" https://apps.apple.com/us/app/whatsapp-messenger/id310633997?uo=4 ")).toBe("310633997");
+    expect(parseAppId("https://apps.apple.com/gb/app/id310633997")).toBe("310633997");
+    expect(parseAppId("acme widget")).toBeNull();
+    expect(parseAppId("id12")).toBeNull();
   });
 });

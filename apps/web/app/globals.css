@@ -95,14 +95,15 @@ label { display: block; font-weight: 600; font-size: 13px; margin: 12px 0 4px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .badge-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 
-/* Chart tokens — reference dataviz palette, categorical slots 1-5 by source
-   (fixed order, never cycled: x, reddit, youtube, telegram, discord). */
+/* Chart tokens — reference dataviz palette, categorical slots 1-6 by source
+   (fixed order, never cycled: x, reddit, youtube, telegram, discord, appstore). */
 :root {
   --series-1: #2a78d6; /* x */
   --series-2: #eb6834; /* reddit */
   --series-3: #1baf7a; /* youtube */
   --series-4: #eda100; /* telegram */
   --series-5: #e87ba4; /* discord */
+  --series-6: #008300; /* appstore */
   --chart-surface: #fcfcfb;
   --chart-grid: #e1e0d9;
   --chart-axis-ink: #898781;
@@ -117,6 +118,7 @@ label { display: block; font-weight: 600; font-size: 13px; margin: 12px 0 4px; }
     --series-3: #199e70;
     --series-4: #c98500;
     --series-5: #d55181;
+    --series-6: #008300;
     --chart-surface: #1a1a19;
     --chart-grid: #2c2c2a;
     --chart-axis-ink: #898781;

@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { parseMonitorConfig } from "@socialmonitor/shared";
+import { SystemicError, parseMonitorConfig } from "@socialmonitor/shared";
 import { fakeSql, stubFetch } from "./helpers/fake-sql";
 import type { MonitorRow, TargetRow } from "../src/db/repos";
 import { xAdapter } from "../src/adapters/x";
 import { redditAdapter } from "../src/adapters/reddit";
 import { discordAdapter } from "../src/adapters/discord";
+import { appstoreAdapter } from "../src/adapters/appstore";
 
 /**
  * Adapter-level cursor semantics. Every case here corresponds to a real bug an
@@ -339,5 +340,169 @@ describe("Discord cursor semantics", () => {
     // Fetched from (threadId - 1) rather than skipping the thread's opening messages.
     expect(decodeURIComponent(s.urls.at(-1)!)).toContain(`after=${(BigInt(threadId) - 1n).toString()}`);
     expect(r.items).toHaveLength(1);
+  });
+});
+
+describe("App Store cursor semantics", () => {
+  const CURSOR = "2026-08-20T12:00:00.000Z";
+  const cursorMs = Date.parse(CURSOR);
+  const iso = (offsetMin: number) => new Date(cursorMs + offsetMin * 60_000).toISOString();
+  const review = (id: number, updated: string, rating = 1) => ({
+    id: { label: String(id) },
+    title: { label: `review ${id}` },
+    content: { label: "the widget app crashes on launch after the latest update, twice today" },
+    updated: { label: updated },
+    author: { name: { label: `user${id}` }, uri: { label: `https://itunes.apple.com/us/reviews/id${id}` } },
+    "im:rating": { label: String(rating) },
+    "im:version": { label: "2.4.1" },
+    "im:voteSum": { label: "0" },
+    "im:voteCount": { label: "3" },
+  });
+  const feed = (entries: unknown[]) => ({ feed: { entry: entries } });
+  /** A full 50-entry page, newest-first, all newer than the cursor. */
+  const fullPage = (page: number) =>
+    feed(Array.from({ length: 50 }, (_, k) => review(100_000 - page * 100 - k, iso(10_000 - page * 100 - k))));
+  const appTarget = target({ source: "appstore", kind: "app", value: "310633997" });
+  const streamDef = { stream: "reviews/us/t1", target: appTarget };
+  const gapEvents = (sql: ReturnType<typeof fakeSql>) =>
+    sql.calls.filter((c) => /insert into pipeline_events/.test(c.text) && c.values.includes("coverage_gap"));
+
+  it("forward-only first sync: records now, fetches nothing", async () => {
+    const s = stubFetch([]);
+    restore = s.restore;
+    const r = await appstoreAdapter.fetch({
+      sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: null, cursorMeta: {},
+    });
+    expect(r.items).toEqual([]);
+    expect(Date.parse(r.nextCursor!)).toBeGreaterThan(Date.now() - 60_000);
+    expect(s.urls).toHaveLength(0);
+  });
+
+  it("walking back to the cursor covers the window: newer items stored, cursor advances", async () => {
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: feed([review(3, iso(120)), review(2, iso(60)), review(1, iso(-60))]) } },
+    ]);
+    restore = s.restore;
+    const r = await appstoreAdapter.fetch({
+      sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items.map((i) => i.externalId)).toEqual(["3", "2"]);
+    expect(r.nextCursor).toBe(iso(120));
+    expect(s.urls).toHaveLength(1);
+    expect(s.urls[0]).toContain("/us/rss/customerreviews/id=310633997/sortBy=mostRecent/page=1/json");
+  });
+
+  it("our own page cap with pages remaining HOLDS the cursor and warns", async () => {
+    const s = stubFetch([{ match: /page=1\/json/, response: { body: fullPage(1) } }]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith({ limits: { max_pages_per_fetch: 1 } }),
+      stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(50);
+    expect(r.nextCursor).toBeNull(); // the regression: advancing here orphans pages 2..n
+    expect(s.urls).toHaveLength(1);
+    expect(gapEvents(sql)).toHaveLength(1);
+  });
+
+  it("a short page means the feed is exhausted: window covered, cursor advances", async () => {
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: fullPage(1) } },
+      { match: /page=2\/json/, response: { body: feed([review(7, iso(5)), review(6, iso(4))]) } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith({ limits: { max_pages_per_fetch: 5 } }),
+      stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(52);
+    expect(r.nextCursor).toBe(iso(10_000 - 100));
+    expect(s.urls).toHaveLength(2);
+    expect(gapEvents(sql)).toHaveLength(0);
+  });
+
+  it("Apple's 10-page cap is lossy-but-covered: cursor ADVANCES with a coverage_gap warning", async () => {
+    const s = stubFetch(
+      Array.from({ length: 10 }, (_, k) => ({
+        match: new RegExp(`page=${k + 1}/json`), response: { body: fullPage(k + 1) },
+      })),
+    );
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith({ limits: { max_pages_per_fetch: 10 } }),
+      stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(500);
+    // Holding here would re-walk 10 pages every tick forever and never advance.
+    expect(r.nextCursor).toBe(iso(10_000 - 100));
+    expect(s.urls).toHaveLength(10);
+    expect(s.urls.some((u) => /page=11\//.test(u))).toBe(false);
+    const gaps = gapEvents(sql);
+    expect(gaps).toHaveLength(1);
+    expect(String(gaps[0]!.values.find((v) => typeof v === "string" && /unreachable/.test(v)))).toContain("500");
+  });
+
+  it("a 400 past page 1 is the end of the feed, not an error", async () => {
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: fullPage(1) } },
+      { match: /page=2\/json/, response: { status: 400, body: "" } },
+    ]);
+    restore = s.restore;
+    const r = await appstoreAdapter.fetch({
+      sql: fakeSql().db, monitor: monitorWith({ limits: { max_pages_per_fetch: 5 } }),
+      stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(50);
+    expect(r.nextCursor).toBe(iso(10_000 - 100));
+  });
+
+  it("a 400 on page 1 is a bad storefront or app: systemic (breaker), cursor untouched", async () => {
+    const s = stubFetch([{ match: /page=1\/json/, response: { status: 400, body: "" } }]);
+    restore = s.restore;
+    await expect(
+      appstoreAdapter.fetch({
+        sql: fakeSql().db, monitor: monitorWith(),
+        stream: { stream: "reviews/zz/t1", target: appTarget }, cursor: CURSOR, cursorMeta: {},
+      }),
+    ).rejects.toThrow(SystemicError);
+  });
+
+  it("an edited review (id already stored) is dropped, but the cursor still moves past it", async () => {
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: feed([review(9, iso(120)), review(8, iso(60)), review(1, iso(-60))]) } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    sql.when(/from raw_items/, [{ external_id: "9" }]);
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items.map((i) => i.externalId)).toEqual(["8"]);
+    expect(r.nextCursor).toBe(iso(120));
+    expect(r.droppedCount).toBeUndefined(); // an edit is not a parse failure
+  });
+
+  it("expands one app target into one stream per configured storefront, uuid last", () => {
+    const streams = appstoreAdapter.streams(
+      monitorWith({ limits: { appstore_storefronts: ["us", "gb"] } }),
+      [appTarget, target({ id: "t2", source: "appstore", kind: "keyword", value: "ignored" })],
+    );
+    expect(streams.map((s) => s.stream)).toEqual(["reviews/us/t1", "reviews/gb/t1"]);
+  });
+
+  it("a target that is not an app id fails systemically instead of fetching", async () => {
+    const s = stubFetch([]);
+    restore = s.restore;
+    await expect(
+      appstoreAdapter.fetch({
+        sql: fakeSql().db, monitor: monitorWith(),
+        stream: { stream: "reviews/us/t1", target: target({ source: "appstore", kind: "app", value: "acme widget" }) },
+        cursor: CURSOR, cursorMeta: {},
+      }),
+    ).rejects.toThrow(SystemicError);
+    expect(s.urls).toHaveLength(0);
   });
 });

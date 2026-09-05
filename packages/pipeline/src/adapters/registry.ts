@@ -6,6 +6,7 @@ import { redditAdapter } from "./reddit";
 import { youtubeAdapter } from "./youtube";
 import { telegramAdapter } from "./telegram";
 import { discordAdapter } from "./discord";
+import { appstoreAdapter } from "./appstore";
 
 const registry = new Map<Source, SourceAdapter>([
   ["x", xAdapter],
@@ -13,6 +14,7 @@ const registry = new Map<Source, SourceAdapter>([
   ["youtube", youtubeAdapter],
   ["telegram", telegramAdapter],
   ["discord", discordAdapter],
+  ["appstore", appstoreAdapter],
 ]);
 
 export function getAdapter(source: Source): SourceAdapter {

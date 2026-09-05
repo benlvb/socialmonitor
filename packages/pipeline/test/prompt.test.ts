@@ -60,6 +60,16 @@ describe("buildClassifyPrompt", () => {
     expect(built.volatile).toContain("Channel: general");
   });
 
+  it("renders a star rating and app version for review-type items", () => {
+    const review = buildClassifyPrompt(config, "appstore", [], [], {
+      ...item,
+      context: { channel_name: "App Store (us)", rating: 1, app_version: "4.2.0" },
+    });
+    expect(review.volatile).toContain("Star rating given by the author: 1/5 (app version 4.2.0)");
+    expect(review.volatile).toContain("Channel: App Store (us)");
+    expect(built.volatile).not.toContain("Star rating");
+  });
+
   it("dynamic verdicts become few-shot examples", () => {
     const withVerdicts = buildClassifyPrompt(
       config,

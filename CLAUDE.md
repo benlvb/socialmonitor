@@ -5,12 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 `socialmonitor` — configurable multi-source social monitoring: X, Reddit, YouTube,
-Telegram, Discord → LLM classification (Haiku, Batch API) → deduped **themes** →
+Telegram, Discord, App Store reviews (credential-less) → LLM classification (Haiku, Batch API) → deduped **themes** →
 dashboard / `/ask` chat / weekly summaries (Sonnet) / Telegram alerts. Single-operator,
 self-hosted, MIT. **`SPEC.md` is the source of truth** (22 interview-confirmed decisions,
 D1–D22); read it before designing anything. `docs/runbook/engineer.md` holds the working
 invariants; `PROGRESS.md` is the checkpoint log. Status: complete and audited (three
-review passes, 78 tests) but **never run against live traffic** — every adapter was
+review passes, 95 tests) but **never run against live traffic** — every adapter was
 verified on recorded fixtures only.
 
 ## Commands
@@ -122,7 +122,8 @@ first run per stream.
    per-source budget, toggle, or limit keys in `packages/shared/src/monitor-config.ts`
    (`budgets.*_per_day`, `toggles.*`, `limits.*` follow the existing pattern).
 2. A migration widening the `check` constraints on `targets.source`, `targets.kind`, and
-   `source_credentials.source` (migration 00001 hardcodes the lists; the DB also allows
+   `source_credentials.source` (see 00006 for the pattern; a credential-less source skips
+   the credentials constraint, `INTEGRATIONS`, `ENV_KEYS`, and the Connections card; the DB also allows
    `x_api`, which `INTEGRATIONS` does not — the two lists are not 1:1).
 3. `packages/pipeline/src/adapters/<source>.ts` implementing `SourceAdapter`
    (`adapters/types.ts`), registered in `adapters/registry.ts`; env keys in
