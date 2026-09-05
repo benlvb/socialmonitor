@@ -150,6 +150,9 @@ function renderItemContext(item: UnclassifiedItem): string {
         : "";
     parts.push(`Star rating given by the author: ${ctx.rating}/5${version}`);
   }
+  if (typeof ctx.developer_reply === "string" && ctx.developer_reply) {
+    parts.push(`Developer's public reply: "${defangPromptMarkers(flattenForPrompt(ctx.developer_reply, 300))}"`);
+  }
   if (typeof ctx.parent_text === "string" && ctx.parent_text) {
     parts.push(`In reply to: "${defangPromptMarkers(flattenForPrompt(ctx.parent_text, 400))}"`);
   }

@@ -16,6 +16,7 @@ const INTEGRATION_TO_SOURCE: Partial<Record<Integration, Source>> = {
   youtube: "youtube",
   telegram_mtproto: "telegram",
   discord_bot: "discord",
+  google_play: "playstore",
 };
 
 function asIntegration(raw: string): Integration | null {

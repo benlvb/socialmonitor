@@ -7,6 +7,7 @@ import { youtubeAdapter } from "./youtube";
 import { telegramAdapter } from "./telegram";
 import { discordAdapter } from "./discord";
 import { appstoreAdapter } from "./appstore";
+import { playstoreAdapter } from "./playstore";
 
 const registry = new Map<Source, SourceAdapter>([
   ["x", xAdapter],
@@ -15,6 +16,7 @@ const registry = new Map<Source, SourceAdapter>([
   ["telegram", telegramAdapter],
   ["discord", discordAdapter],
   ["appstore", appstoreAdapter],
+  ["playstore", playstoreAdapter],
 ]);
 
 export function getAdapter(source: Source): SourceAdapter {
