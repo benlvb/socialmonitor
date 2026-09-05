@@ -51,6 +51,7 @@ const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const SCOPE = "https://www.googleapis.com/auth/androidpublisher";
 const PAGE_SIZE = 100;
 const TOKEN_TTL_MARGIN_MS = 300_000;
+const BAD_KEY_MSG = "GOOGLE_SERVICE_ACCOUNT_JSON is not a service-account key file (needs client_email and private_key)";
 const PACKAGE_RE = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/;
 
 export interface ServiceAccount {
@@ -262,15 +263,12 @@ async function listReviews(
   return { status: res.status, page: (await res.json()) as ReviewsPage };
 }
 
-function newestIso(items: RawItem[]): string | null {
-  if (items.length === 0) return null;
-  return new Date(Math.max(...items.map((i) => i.postedAt.getTime()))).toISOString();
-}
-
-function laterIso(a: string | null, b: string | null | undefined): string | null {
-  if (!a) return b ?? null;
-  if (!b) return a;
-  return new Date(a).getTime() >= new Date(b).getTime() ? a : b;
+/** ISO of the newest postedAt across `items`, folding in an earlier ISO (a remembered newest) when given. */
+function newestIso(items: RawItem[], also?: string | null): string | null {
+  const times = items.map((i) => i.postedAt.getTime());
+  if (also) times.push(new Date(also).getTime());
+  if (times.length === 0) return null;
+  return new Date(Math.max(...times)).toISOString();
 }
 
 interface PendingMeta {
@@ -299,9 +297,7 @@ export const playstoreAdapter: SourceAdapter = {
     const creds = await resolveCredentials(sql, ownerId, "google_play");
     if (!creds) return { ok: false, message: "no credentials" };
     const sa = parseServiceAccount(creds.GOOGLE_SERVICE_ACCOUNT_JSON);
-    if (!sa) {
-      return { ok: false, message: "GOOGLE_SERVICE_ACCOUNT_JSON is not a service-account key file (needs client_email and private_key)" };
-    }
+    if (!sa) return { ok: false, message: BAD_KEY_MSG };
     try {
       await getAccessToken(sa);
       return { ok: true, message: `token obtained for ${sa.client_email}` };
@@ -328,11 +324,7 @@ export const playstoreAdapter: SourceAdapter = {
     const creds = await resolveCredentials(sql, monitor.owner_id, "google_play");
     if (!creds) return { items: [], nextCursor: null }; // unconfigured is a state (D22)
     const sa = parseServiceAccount(creds.GOOGLE_SERVICE_ACCOUNT_JSON);
-    if (!sa) {
-      throw new SystemicError(
-        "playstore: GOOGLE_SERVICE_ACCOUNT_JSON is not a service-account key file (needs client_email and private_key)",
-      );
-    }
+    if (!sa) throw new SystemicError(`playstore: ${BAD_KEY_MSG}`);
 
     // Forward-only first sync (SPEC §9): backfill is a deliberate action.
     if (!cursor) return { items: [], nextCursor: new Date().toISOString() };
@@ -407,7 +399,7 @@ export const playstoreAdapter: SourceAdapter = {
       if (seen.size > 0) items = newer.filter((i) => !seen.has(i.externalId));
     }
 
-    const newestSeen = laterIso(newestIso(newer), meta.pending_newest);
+    const newestSeen = newestIso(newer, meta.pending_newest);
     const extra = dropped > 0 ? { droppedCount: dropped } : {};
     if (completed) {
       // Window covered (this run, or this run plus the remembered earlier one):

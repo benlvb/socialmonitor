@@ -205,14 +205,13 @@ export async function backfill(monitorId: string, formData: FormData): Promise<v
           continue;
         }
 
-        // Play Store resumes an unfinished walk from Google's page token; a rewind must
-        // forget it too, or the next run would continue the OLD walk first.
-        const meta = JSON.stringify({
-          ...prevMeta,
-          pending_until: null,
-          pending_newest: null,
-          ...(source === "playstore" ? { pending_token: null } : {}),
-        });
+        // Every source keeps its resume state under pending_* (X/YouTube: pending_until /
+        // pending_newest, Play Store: pending_token). A rewind forgets all of it, or the
+        // next run would continue the OLD walk first.
+        const cleared = Object.fromEntries(
+          Object.keys(prevMeta).filter((k) => k.startsWith("pending_")).map((k) => [k, null]),
+        );
+        const meta = JSON.stringify({ ...prevMeta, ...cleared, pending_until: null, pending_newest: null });
         await sql`
           insert into sync_streams
             (monitor_id, source, stream, cursor, cursor_meta, rows_total,

@@ -55,6 +55,9 @@ const tweet = (id: string, iso: string) => ({
 });
 
 let restore: (() => void) | null = null;
+/** pipeline_events inserts of one kind recorded by the fake sql. */
+const eventsOfKind = (sql: ReturnType<typeof fakeSql>, kind: string) =>
+  sql.calls.filter((c) => /insert into pipeline_events/.test(c.text) && c.values.includes(kind));
 afterEach(() => {
   restore?.();
   restore = null;
@@ -382,8 +385,6 @@ describe("App Store cursor semantics", () => {
     feed(Array.from({ length: 50 }, (_, k) => review(100_000 - page * 100 - k, iso(10_000 - page * 100 - k))));
   const appTarget = target({ source: "appstore", kind: "app", value: "310633997" });
   const streamDef = { stream: "reviews/us/t1", target: appTarget };
-  const eventsOfKind = (sql: ReturnType<typeof fakeSql>, kind: string) =>
-    sql.calls.filter((c) => /insert into pipeline_events/.test(c.text) && c.values.includes(kind));
 
   it("forward-only first sync: records now, fetches nothing", async () => {
     const s = stubFetch([]);
@@ -865,8 +866,6 @@ describe("Google Play cursor semantics", () => {
   const PAGE1 = /reviews\?maxResults=100$/;
   const pageWith = (tok: string) => new RegExp(`reviews\\?maxResults=100&token=${tok}$`);
   const streamDef = { stream: "reviews/t1", target: target({ source: "playstore", kind: "app", value: PKG }) };
-  const eventsOfKind = (sql: ReturnType<typeof fakeSql>, kind: string) =>
-    sql.calls.filter((c) => /insert into pipeline_events/.test(c.text) && c.values.includes(kind));
   const debounce = (sql: ReturnType<typeof fakeSql>) => sql.calls.find((c) => /from pipeline_events where kind = \?/.test(c.text));
 
   beforeEach(() => {
