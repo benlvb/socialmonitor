@@ -257,6 +257,7 @@ async function listReviews(
   }
   // 400 is how the API rejects a stale page token; the caller disambiguates.
   if (res.status === 400) return { status: 400, page: null };
+  if (res.status === 401) cachedToken = null; // dead bearer: re-exchange next run instead of replaying it for an hour
   if (!res.ok) throw errorFromStatus(res.status, await res.text().then((t) => t.slice(0, 300)));
   return { status: res.status, page: (await res.json()) as ReviewsPage };
 }
@@ -381,8 +382,11 @@ export const playstoreAdapter: SourceAdapter = {
         }
         newer.push(item);
       }
+      // Google's token is the authority on whether more pages exist: an empty page
+      // that still carries one is not the end (proto3 JSON omits empty `reviews`),
+      // so only the cursor or a missing token ends the walk; maxPages bounds it.
       const next = data.tokenPagination?.nextPageToken;
-      if (reachedCursor || !next || reviews.length === 0) {
+      if (reachedCursor || !next) {
         completed = true;
         pageToken = undefined;
         break;
@@ -420,7 +424,7 @@ export const playstoreAdapter: SourceAdapter = {
         stream: stream.stream,
         level: "warn",
         kind: "coverage_gap",
-        message: `more reviews newer than the cursor than limits.max_pages_per_fetch (${maxPages}) pages cover; cursor held, the walk resumes from Google's page token next run`,
+        message: `the run budget (limits.max_pages_per_fetch = ${maxPages}) ran out before the walk reached the cursor; cursor held, the walk resumes from Google's page token next run`,
       });
     }
     return {

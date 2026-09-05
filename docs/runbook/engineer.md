@@ -55,8 +55,9 @@ typed errors. Add fixtures (`fixtures/<source>.json`) replayed on first-run in f
 mode, register in `adapters/registry.ts`, add env keys to `credentials.ts` ENV_KEYS +
 `.env.example` and a card in the Connections page (skip both for a credential-less
 source such as `appstore` — `status()` just returns configured), target kinds in
-`shared/constants.ts` TARGET_KINDS, a migration widening the `targets` check constraints
-(00006 is the pattern), and a categorical color slot in `globals.css`/`charts.tsx` (fixed
+`shared/constants.ts` TARGET_KINDS, a migration widening the `targets` check constraints — and, for a
+credentialed source, `source_credentials.source` too (00006 is the pattern; 00007 does both) — and a
+categorical color slot in `globals.css`/`charts.tsx` (fixed
 order — validate with the `dataviz` skill's `validate_palette.js`).
 
 ## Adding an /ask tool

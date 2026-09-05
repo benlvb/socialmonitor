@@ -985,6 +985,72 @@ describe("Google Play cursor semantics", () => {
     expect(r.nextCursor).toBe(iso(cursorSecs + 300));
   });
 
+  it("an EMPTY page that still carries a nextPageToken is not the end: the walk follows the token", async () => {
+    // proto3 JSON omits an empty `reviews`; treating that as end-of-list advanced the
+    // cursor over every later page (review of PR #3).
+    const s = stubFetch([
+      tokenStub,
+      { match: PAGE1, response: { body: page([review("a", cursorSecs + 300), review("b", cursorSecs + 200)], "P2") } },
+      { match: pageWith("P2"), response: { body: { tokenPagination: { nextPageToken: "P3" } } } },
+      { match: pageWith("P3"), response: { body: page([review("c", cursorSecs + 100), review("old", cursorSecs - 1)]) } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await playstoreAdapter.fetch({ sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} });
+    expect(s.urls.filter((u) => /reviews/.test(u))).toHaveLength(3);
+    expect(r.items.map((i) => i.externalId)).toEqual(["a", "b", "c"]);
+    expect(r.nextCursor).toBe(iso(cursorSecs + 300));
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0);
+  });
+
+  it("an empty page with a token at the budget edge HOLDS with that token — never a covered window", async () => {
+    const s = stubFetch([
+      tokenStub,
+      { match: PAGE1, response: { body: page([review("a", cursorSecs + 300)], "P2") } },
+      { match: pageWith("P2"), response: { body: { tokenPagination: { nextPageToken: "P3" } } } },
+    ]);
+    restore = s.restore;
+    const r = await playstoreAdapter.fetch({
+      sql: fakeSql().db, monitor: monitorWith({ limits: { max_pages_per_fetch: 2 } }), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    expect(r.cursorMeta).toEqual({ pending_token: "P3", pending_newest: iso(cursorSecs + 300) });
+    // the resume path meets the same shape: still not the end
+    const s2 = stubFetch([
+      { match: pageWith("P3"), response: { body: { tokenPagination: { nextPageToken: "P4" } } } },
+      { match: pageWith("P4"), response: { body: page([review("old", cursorSecs - 1)]) } },
+    ]);
+    restore = () => { s.restore(); s2.restore(); };
+    const r2 = await playstoreAdapter.fetch({
+      sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: r.cursorMeta ?? {},
+    });
+    expect(r2.nextCursor).toBe(iso(cursorSecs + 300));
+    expect(r2.cursorMeta).toEqual({ pending_token: null, pending_newest: null });
+  });
+
+  it("an empty page WITHOUT a token is the genuine end: nothing newer, cursor held, meta cleared, no warning", async () => {
+    const s = stubFetch([tokenStub, { match: PAGE1, response: { body: {} } }]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await playstoreAdapter.fetch({ sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} });
+    expect(r).toEqual({ items: [], nextCursor: null, cursorMeta: { pending_token: null, pending_newest: null } });
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0);
+  });
+
+  it("a 401 from the reviews endpoint is systemic AND forgets the cached bearer, so the next run re-exchanges", async () => {
+    const s = stubFetch([
+      tokenStub,
+      { match: PAGE1, response: { status: 401, body: { error: { code: 401 } } } },
+      tokenStub,
+      { match: PAGE1, response: { body: page([review("old", cursorSecs - 1)]) } },
+    ]);
+    restore = s.restore;
+    const ctx = { sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} };
+    await expect(playstoreAdapter.fetch(ctx)).rejects.toBeInstanceOf(SystemicError);
+    await playstoreAdapter.fetch(ctx);
+    expect(s.urls.filter((u) => /token$/.test(u))).toHaveLength(2);
+  });
+
   it("a 400 on a fresh walk (no resume token) is systemic", async () => {
     const s = stubFetch([tokenStub, { match: PAGE1, response: { status: 400, body: { error: { code: 400 } } } }]);
     restore = s.restore;
