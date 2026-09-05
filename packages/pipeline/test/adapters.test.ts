@@ -8,6 +8,7 @@ import { youtubeAdapter } from "../src/adapters/youtube";
 import { telegramAdapter } from "../src/adapters/telegram";
 import { discordAdapter, datetimeToSnowflake, snowflakeToDatetime } from "../src/adapters/discord";
 import { appstoreAdapter, parseAppId, parseReview } from "../src/adapters/appstore";
+import { playstoreAdapter } from "../src/adapters/playstore";
 
 const monitor: MonitorRow = {
   id: "00000000-0000-0000-0000-000000000001",
@@ -164,5 +165,41 @@ describe("appstore adapter (fixtures)", () => {
     expect(parseAppId("https://apps.apple.com/gb/app/id310633997")).toBe("310633997");
     expect(parseAppId("acme widget")).toBeNull();
     expect(parseAppId("id12")).toBeNull();
+  });
+});
+
+describe("playstore adapter (fixtures)", () => {
+  it("parses reviews: tab-joined title, rating + developer reply in context, thumbs-up as engagement", async () => {
+    const r = await playstoreAdapter.fetch({ sql, monitor, stream: { stream: "reviews/t1" }, cursor: null, cursorMeta: {} });
+    expect(r.items.length).toBe(4);
+    const long = r.items.find((i) => i.externalId === "gp:AOqpTOF3x9q1LongText0001")!;
+    expect(long.source).toBe("playstore");
+    expect(long.content.startsWith("Mixed feelings after a month\n\nI run a small agency")).toBe(true);
+    expect(long.context.rating).toBe(2);
+    expect(long.context.app_version).toBe("4.2.0");
+    expect(long.context.channel_name).toBe("Google Play");
+    expect(String(long.context.developer_reply)).toContain("fixed in 4.2.1");
+    expect(long.metrics.thumbs_up).toBe(21);
+    expect(long.metrics.has_developer_reply).toBe(true);
+    expect(long.engagement).toBe(21);
+    expect(long.impressions).toBeNull();
+    expect(long.authorHandle).toBe("Daniel O");
+    expect(long.url).toBe("https://play.google.com/store/apps/details?id=com.example.app&reviewId=gp%3AAOqpTOF3x9q1LongText0001");
+    // lastModified.seconds (string int64) → UTC
+    expect(long.postedAt.toISOString()).toBe("2026-08-22T09:15:00.000Z");
+    const crash = r.items.find((i) => i.externalId === "gp:AOqpTOF3x9q1Crash0002")!;
+    expect(crash.context.rating).toBe(1);
+    expect(crash.metrics.has_developer_reply).toBe(false);
+    expect("developer_reply" in crash.context).toBe(false);
+    // cursor = newest lastModified
+    expect(r.nextCursor).toBe("2026-08-22T09:15:00.000Z");
+  });
+  it("second run with a cursor is quiet", async () => {
+    const r = await playstoreAdapter.fetch({ sql, monitor, stream: { stream: "reviews/t1" }, cursor: "2026-08-22T09:15:00.000Z", cursorMeta: {} });
+    expect(r.items).toEqual([]);
+    expect(r.nextCursor).toBeNull();
+  });
+  it("reports configured in fixture mode without touching the DB", async () => {
+    expect((await playstoreAdapter.status(sql, monitor.owner_id)).configured).toBe(true);
   });
 });

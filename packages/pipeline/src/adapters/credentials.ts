@@ -13,6 +13,7 @@ export const ENV_KEYS: Record<Integration, string[]> = {
   youtube: ["YOUTUBE_API_KEY"],
   telegram_mtproto: ["TELEGRAM_MTPROTO_API_ID", "TELEGRAM_MTPROTO_API_HASH", "TELEGRAM_MTPROTO_SESSION"],
   discord_bot: ["DISCORD_BOT_TOKEN"],
+  google_play: ["GOOGLE_SERVICE_ACCOUNT_JSON"],
   anthropic: ["ANTHROPIC_API_KEY"],
   telegram_notify: ["TELEGRAM_NOTIFY_BOT_TOKEN", "TELEGRAM_NOTIFY_CHAT_ID"],
 };

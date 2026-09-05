@@ -104,6 +104,7 @@ label { display: block; font-weight: 600; font-size: 13px; margin: 12px 0 4px; }
   --series-4: #eda100; /* telegram */
   --series-5: #e87ba4; /* discord */
   --series-6: #008300; /* appstore */
+  --series-7: #7b3fe4; /* playstore — the Play-brand green fails the palette validator next to series-6 */
   --chart-surface: #fcfcfb;
   --chart-grid: #e1e0d9;
   --chart-axis-ink: #898781;
@@ -119,6 +120,7 @@ label { display: block; font-weight: 600; font-size: 13px; margin: 12px 0 4px; }
     --series-4: #c98500;
     --series-5: #d55181;
     --series-6: #008300;
+    --series-7: #8f5cf7;
     --chart-surface: #1a1a19;
     --chart-grid: #2c2c2a;
     --chart-axis-ink: #898781;

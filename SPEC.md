@@ -37,6 +37,7 @@ This file — not the original documents — is the source of truth.
 | D21 | Hosting: Railway (worker), Vercel (web), Supabase (DB + queue + cron + vault). GitHub repo `benlvb/socialmonitor`. |
 | D22 | **Template-first**: entire system built with credential placeholders. Every adapter reports configured/unconfigured; unconfigured streams skip cleanly. Fixture mode drives the real pipeline end-to-end without live accounts. Plugging a key into the connections page activates a source with no deploy. |
 | D23 | **App Store reviews** (added 2026-09-05): a credential-less adapter over Apple's public customer-reviews feed — any app, yours or a competitor's. Feed reality: 50 reviews/page, hard cap at page 10 (newest 500 per storefront), some storefronts empty. Storefronts are per-monitor config (`limits.appstore_storefronts`); one stream per (app target × storefront). Cursor = newest `updated` (strict `<` on the walk: a new review in the cursor's own second is kept). Apple's cap counts as *covered* — the cursor advances and a per-stream `coverage_lost` **error** records it; `limits.max_pages_per_fetch` does not apply (Apple's 500 bounds the walk; a smaller cap could never converge on a busy backfill). A 400 past page 1 is ambiguous and holds. Edited reviews (same id, new `updated`) are dropped, first-seen text kept. Star rating travels in item context to the classifier; no impressions (helpful votes = engagement). The own-app App Store Connect API and Google Play (official API for own apps, scraper for others) are later adapters. |
+| D24 | **Google Play reviews** (added 2026-09-05): the official Android Publisher API with a service-account key (`GOOGLE_SERVICE_ACCOUNT_JSON`, integration `google_play`) — **own apps only**, and Google exposes only reviews modified in roughly the last 7 days (a backfill cannot reach further; the forward-only first sync + fetch cadence keeps coverage contiguous). One stream per app target, `reviews/<target>` (no storefront dimension). Cursor = newest `lastModified` (strict `<`). `limits.max_pages_per_fetch` bounds each run; a run that exhausts it with pages still newer than the cursor **holds** and remembers Google's `nextPageToken` + the newest seen in `cursor_meta` (`pending_token`, `pending_newest`), resumes from the token next run and advances to `pending_newest` when the walk completes; a stale token restarts from page 1 (nothing skipped — earlier pages were stored). Each hold emits a per-stream `coverage_gap`. Missing key = unconfigured state (D22); malformed key = systemic. Edited reviews (same id, new `lastModified`) are dropped, first-seen text kept. Rating, app version and the developer's public reply travel in item context; thumbs-up = engagement, no impressions. Competitor apps need a scraper transport later (the D5 precedent). |
 
 ## 1. Architecture
 
@@ -111,7 +112,7 @@ CREATE TABLE monitors (
 CREATE TABLE targets (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   monitor_id uuid NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
-  source text NOT NULL,          -- x | reddit | youtube | telegram | discord | appstore
+  source text NOT NULL,          -- x | reddit | youtube | telegram | discord | appstore | playstore
   kind text NOT NULL,            -- account | keyword | subreddit | user | channel | guild | app
   value text NOT NULL,           -- handle, keyword, subreddit name, channel username, guild id…
   enabled boolean NOT NULL DEFAULT true,
@@ -124,7 +125,7 @@ CREATE TABLE source_credentials (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   owner_id uuid NOT NULL REFERENCES profiles(id),
   source text NOT NULL,          -- x_scraper | x_api | reddit | youtube | telegram_mtproto
-                                 -- | discord_bot | anthropic | telegram_notify
+                                 -- | discord_bot | anthropic | telegram_notify | google_play
   label text NOT NULL DEFAULT 'default',
   vault_secret_id uuid,          -- NULL ⇒ unconfigured (placeholder row)
   config jsonb NOT NULL DEFAULT '{}',   -- non-secret parts (e.g. reddit client_id, chat_id)
@@ -356,6 +357,7 @@ Per-source notes (v1):
   Content = title + body (collapsed when one repeats the other); rating + app version
   into `context`; helpful votes → engagement. Termination by `link[rel=last]`; an empty or
   short page below it (Apple's transient blank pages) holds + `coverage_gap`.
+- **playstore** (Android Publisher API, service-account key — D24): `reviews/<target>` per app target, no storefront dimension. Newest-first walk of `/v3/applications/<package>/reviews?maxResults=100&token=…` until an entry strictly older than the cursor or a page without `nextPageToken` (the token is the authority: an empty page that carries one is not the end). `limits.max_pages_per_fetch` bounds a run; an exhausted budget holds with `cursor_meta.pending_token`/`pending_newest`, resumes from the token next run and advances to the remembered newest when the walk completes; a stale token restarts from page 1; every hold emits a per-stream `coverage_gap`. Google keeps ~7 days, own apps only.
 
 Fixture mode (D22): each adapter has `fixtures/*.json` of realistic payloads; a
 `FIXTURE_MODE=1` worker run replays them through the real parse→store→classify→themes
