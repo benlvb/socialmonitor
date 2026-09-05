@@ -79,8 +79,11 @@ export function lastPageOf(feed: RssFeed): number | null {
   if (!raw) return null;
   const links = Array.isArray(raw) ? raw : [raw];
   const last = links.find((l) => l.attributes?.rel === "last");
-  const m = last?.attributes?.href?.match(/page=(\d+)/);
-  return m ? Number(m[1]) : null;
+  // The live href carries `page=` twice (`/page=10/` in the path, `...page=2/json`
+  // in the query) — anchor on the path segment.
+  const m = last?.attributes?.href?.match(/\/page=(\d+)\//);
+  const n = m ? Number(m[1]) : NaN;
+  return Number.isInteger(n) && n >= 1 ? n : null;
 }
 
 /** Accepts a bare numeric id or an App Store URL containing `/id<digits>`. */
@@ -263,10 +266,10 @@ export const appstoreAdapter: SourceAdapter = {
       const lastPage = lastPageOf(feed);
       if (entries.length === 0 && lastPage !== null && page > lastPage) break; // past the end
       if (entries.length === 0) {
-        // No links at all, or Apple still claims more pages: a transient empty
-        // page, not the end. Page 1 with nothing is also what an unserved
-        // storefront looks like — hold quietly; anything later is a gap.
-        if (page > 1) anomalyPage = page;
+        // A transient blank page, not the end. Page 1 with no links at all is
+        // also what an unserved storefront looks like — hold quietly; a later
+        // page, or a page 1 whose links claim more pages, is a gap worth saying.
+        if (page > 1 || (lastPage !== null && lastPage > 1)) anomalyPage = page;
         break;
       }
       let reachedCursor = false;
@@ -286,6 +289,11 @@ export const appstoreAdapter: SourceAdapter = {
         newer.push(item);
       }
       if (reachedCursor) break;
+      // Cap detection BEFORE the `last` break: every real feed with 500+ reviews
+      // reports last=10, the cap itself, so the break would strand the flag and
+      // the lossy advance would go unrecorded (review N1, round 3). A short
+      // page 10 is a clean end, not a cap.
+      if (page === APPSTORE_FEED_PAGE_CAP && entries.length === PAGE_SIZE) feedCapped = true;
       if (lastPage !== null && page >= lastPage) break; // the feed says this is the last page
       if (entries.length < PAGE_SIZE) {
         // Short page: the end when the feed carries no page count, an anomaly
@@ -293,7 +301,25 @@ export const appstoreAdapter: SourceAdapter = {
         if (lastPage !== null && page < lastPage) anomalyPage = page;
         break;
       }
-      if (page === APPSTORE_FEED_PAGE_CAP) feedCapped = true;
+    }
+
+    // The cursor advances over everything seen, edits included, so an edited
+    // review is not re-walked on every tick. null = nothing newer = hold.
+    const nextCursor = newestIso(newer);
+
+    // Drop ids already stored ON THIS STREAM (edits, the boundary review):
+    // a second row per edit would inflate the theme item count (review S1).
+    // Before the anomaly exit too — that path re-walks the same pages every
+    // tick, so it meets edits most (review N2, round 3).
+    let items = newer;
+    if (newer.length > 0) {
+      const ids = newer.map((i) => i.externalId);
+      const rows = await sql`
+        select external_id from raw_items
+        where monitor_id = ${monitor.id} and source = 'appstore'
+          and stream = ${stream.stream} and external_id = any(${ids}::text[])`;
+      const seen = new Set(rows.map((r) => r.external_id as string));
+      if (seen.size > 0) items = newer.filter((i) => !seen.has(i.externalId));
     }
 
     if (anomalyPage !== null) {
@@ -308,24 +334,7 @@ export const appstoreAdapter: SourceAdapter = {
           message: `Apple served an empty or short page ${anomalyPage} mid-feed; cursor held so the walk repeats next run (transient on Apple's side)`,
         });
       }
-      return { items: newer, nextCursor: null, ...(dropped > 0 ? { droppedCount: dropped } : {}) };
-    }
-
-    // The cursor advances over everything seen, edits included, so an edited
-    // review is not re-walked on every tick. null = nothing newer = hold.
-    const nextCursor = newestIso(newer);
-
-    // Drop ids already stored ON THIS STREAM (edits, the boundary review):
-    // a second row per edit would inflate the theme item count (review S1).
-    let items = newer;
-    if (newer.length > 0) {
-      const ids = newer.map((i) => i.externalId);
-      const rows = await sql`
-        select external_id from raw_items
-        where monitor_id = ${monitor.id} and source = 'appstore'
-          and stream = ${stream.stream} and external_id = any(${ids}::text[])`;
-      const seen = new Set(rows.map((r) => r.external_id as string));
-      if (seen.size > 0) items = newer.filter((i) => !seen.has(i.externalId));
+      return { items, nextCursor: null, ...(dropped > 0 ? { droppedCount: dropped } : {}) };
     }
 
     // Lossy-but-covered: 500 reviews newer than the cursor and Apple has no

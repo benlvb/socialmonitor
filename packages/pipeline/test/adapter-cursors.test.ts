@@ -5,7 +5,7 @@ import type { MonitorRow, TargetRow } from "../src/db/repos";
 import { xAdapter } from "../src/adapters/x";
 import { redditAdapter } from "../src/adapters/reddit";
 import { discordAdapter } from "../src/adapters/discord";
-import { appstoreAdapter } from "../src/adapters/appstore";
+import { appstoreAdapter, lastPageOf } from "../src/adapters/appstore";
 
 /**
  * Adapter-level cursor semantics. Every case here corresponds to a real bug an
@@ -452,9 +452,11 @@ describe("App Store cursor semantics", () => {
   });
 
   it("Apple's 10-page cap is lossy-but-covered: cursor ADVANCES with a coverage_lost error", async () => {
+    // Real feeds with 500+ reviews report last=10 on every page — the cap
+    // itself — so the `last` break must not strand the cap flag (round 3 N1).
     const s = stubFetch(
       Array.from({ length: 10 }, (_, k) => ({
-        match: new RegExp(`page=${k + 1}/json`), response: { body: fullPage(k + 1) },
+        match: new RegExp(`page=${k + 1}/json`), response: { body: linked(fullPage(k + 1).feed.entry, k + 1, 10) },
       })),
     );
     restore = s.restore;
@@ -482,7 +484,7 @@ describe("App Store cursor semantics", () => {
   it("Apple's cap with every entry unparseable HOLDS and does not claim an advance", async () => {
     const broken = (page: number) => feed(Array.from({ length: 50 }, (_, k) => ({ id: { label: String(page * 100 + k) }, title: { label: "no updated field" } })));
     const s = stubFetch(
-      Array.from({ length: 10 }, (_, k) => ({ match: new RegExp(`page=${k + 1}/json`), response: { body: broken(k + 1) } })),
+      Array.from({ length: 10 }, (_, k) => ({ match: new RegExp(`page=${k + 1}/json`), response: { body: linked(broken(k + 1).feed.entry, k + 1, 10) } })),
     );
     restore = s.restore;
     const sql = fakeSql();
@@ -616,6 +618,62 @@ describe("App Store cursor semantics", () => {
     expect(r.items).toEqual([]);
     expect(r.nextCursor).toBeNull();
     expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0);
+  });
+
+  it("a SHORT page 10 with last=10 is a clean end, not the cap: advance, no coverage_lost", async () => {
+    const s = stubFetch([
+      ...Array.from({ length: 9 }, (_, k) => ({ match: new RegExp(`page=${k + 1}/json`), response: { body: linked(fullPage(k + 1).feed.entry, k + 1, 10) } })),
+      { match: /page=10\/json/, response: { body: linked([review(5, iso(3)), review(4, iso(2))], 10, 10) } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(452);
+    expect(r.nextCursor).toBe(iso(10_000 - 100));
+    expect(eventsOfKind(sql, "coverage_lost")).toHaveLength(0);
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0);
+  });
+
+  it("the anomaly (hold) path still drops already-stored ids — it re-walks every tick, so it meets edits most", async () => {
+    const page1 = fullPage(1).feed.entry as { id: { label: string } }[];
+    const storedId = page1[0]!.id.label;
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: linked(page1, 1, 10) } },
+      { match: /page=2\/json/, response: { body: { feed: {} } } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    sql.when(/from raw_items/, [{ external_id: storedId }]);
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    expect(r.items).toHaveLength(49); // round 3 N2: the early return skipped the dedupe
+    expect(r.items.some((i) => i.externalId === storedId)).toBe(false);
+  });
+
+  it("an empty page 1 WITH links claiming more pages is a blank, not an unserved storefront: hold + warn", async () => {
+    const s = stubFetch([{ match: /page=1\/json/, response: { body: linked([], 1, 10) } }]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toEqual([]);
+    expect(r.nextCursor).toBeNull();
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(1);
+  });
+
+  it("lastPageOf reads the path segment of Apple's real href, which carries page= twice", () => {
+    const href = "https://itunes.apple.com/us/rss/customerreviews/page=10/id=310633997/sortby=mostrecent/xml?urlDesc=/customerreviews/id=310633997/sortBy=mostRecent/page=2/json";
+    expect(lastPageOf({ feed: { link: [{ attributes: { rel: "last", href } }] } })).toBe(10);
+    expect(lastPageOf({ feed: { link: { attributes: { rel: "last", href: "https://x/page=3/json" } } } })).toBe(3);
+    expect(lastPageOf({ feed: { link: [{ attributes: { rel: "last", href: "https://x/page=0/json" } }] } })).toBeNull();
+    expect(lastPageOf({ feed: { link: [{ attributes: { rel: "next", href: "https://x/page=2/json" } }] } })).toBeNull();
+    expect(lastPageOf({ feed: {} })).toBeNull();
+    expect(lastPageOf({})).toBeNull();
   });
 
   it("expands one app target into one stream per configured storefront, uuid last", () => {
