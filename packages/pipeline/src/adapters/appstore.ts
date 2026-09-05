@@ -298,9 +298,14 @@ export const appstoreAdapter: SourceAdapter = {
       if (page === APPSTORE_FEED_PAGE_CAP && entries.length >= PAGE_SIZE) feedCapped = true;
       if (lastPage !== null && page >= lastPage) break; // the feed says this is the last page
       if (entries.length < PAGE_SIZE) {
-        // Short page: the end when the feed carries no page count, an anomaly
-        // when it says more pages exist.
-        if (lastPage !== null && page < lastPage) anomalyPage = page;
+        // Short page: an anomaly when the feed says more pages exist, and also
+        // when it carries no usable `last` at all — without that link we cannot
+        // tell a genuine end from a truncated response, and advancing would
+        // skip the pages behind it for good. A real end page DOES carry `last`
+        // (probed: Broadcasts p3 34 entries last=3, NetNewsWire p4 20/last=4),
+        // so it breaks at the `page >= lastPage` check above and never lands
+        // here — holding costs a repeated walk, never a small app's feed.
+        if (lastPage === null || page < lastPage) anomalyPage = page;
         break;
       }
     }
