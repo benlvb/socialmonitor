@@ -239,7 +239,7 @@ export const xAdapter: SourceAdapter = {
     }
 
     // Incomplete: HOLD the contiguous cursor and remember where to resume.
-    if (!(await hasEventToday(sql, monitor.id, "coverage_gap"))) {
+    if (!(await hasEventToday(sql, monitor.id, "coverage_gap", stream.stream))) {
       await logEvent(sql, {
         monitorId: monitor.id,
         source: "x",

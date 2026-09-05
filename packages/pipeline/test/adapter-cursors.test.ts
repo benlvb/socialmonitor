@@ -6,6 +6,7 @@ import { xAdapter } from "../src/adapters/x";
 import { redditAdapter } from "../src/adapters/reddit";
 import { discordAdapter } from "../src/adapters/discord";
 import { appstoreAdapter, lastPageOf } from "../src/adapters/appstore";
+import { youtubeAdapter } from "../src/adapters/youtube";
 
 /**
  * Adapter-level cursor semantics. Every case here corresponds to a real bug an
@@ -731,5 +732,105 @@ describe("App Store cursor semantics", () => {
       }),
     ).rejects.toThrow(SystemicError);
     expect(s.urls).toHaveLength(0);
+  });
+});
+
+describe("coverage_gap debounce is scoped per stream (review of PR #2)", () => {
+  // The debounce query is `select 1 from pipeline_events where kind = ? … (?::text is null or stream = ?)`.
+  // Unscoped (stream = null) it matches ANY coverage_gap for the monitor that day, so an
+  // App Store blank page at 08:00 silenced X/Reddit/YouTube's own warnings until midnight.
+  function debounceQuery(sql: ReturnType<typeof fakeSql>) {
+    const q = sql.calls.find((c) => /from pipeline_events where kind = \?/.test(c.text));
+    expect(q, "the adapter consulted the coverage_gap debounce").toBeDefined();
+    expect(q!.values[0]).toBe("coverage_gap");
+    return q!.values;
+  }
+
+  it("X holds an incomplete window and debounces on ITS stream, not the monitor", async () => {
+    vi.stubEnv("TWITTERAPI_IO_KEY", "test-key");
+    const s = stubFetch([
+      { match: /advanced_search/, response: { body: {
+        tweets: [tweet("9", "2026-08-20T12:00:00Z"), tweet("8", "2026-08-20T11:00:00Z")],
+        has_next_page: true, next_cursor: "PAGE2",
+      } } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await xAdapter.fetch({
+      sql: sql.db, monitor: monitorWith({ limits: { max_pages_per_fetch: 1 } }),
+      stream: { stream: "search/t1", target: target() }, cursor: "1000", cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    const values = debounceQuery(sql);
+    expect(values[3]).toBe("search/t1");
+    expect(values[4]).toBe("search/t1");
+  });
+
+  it("Reddit's page-cap hold debounces on its stream", async () => {
+    vi.stubEnv("REDDIT_CLIENT_ID", "cid");
+    vi.stubEnv("REDDIT_CLIENT_SECRET", "sec");
+    vi.stubEnv("REDDIT_USERNAME", "user");
+    vi.stubEnv("REDDIT_PASSWORD", "pw");
+    const cursorSecs = 1_787_000_000;
+    const post = (id: string, createdSecs: number) => ({
+      kind: "t3",
+      data: { id, name: `t3_${id}`, title: `post ${id}`, selftext: "body text here", author: "someone",
+        created_utc: createdSecs, permalink: `/r/x/comments/${id}/`, subreddit: "x", score: 1, num_comments: 0 },
+    });
+    const s = stubFetch([
+      { match: /access_token/, response: { body: { access_token: "tok", expires_in: 3600 } } },
+      { match: /r\/analytics\/new/, response: { body: { data: {
+        children: [post("a", cursorSecs + 300), post("b", cursorSecs + 200)], after: "t3_b",
+      } } } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await redditAdapter.fetch({
+      sql: sql.db, monitor: monitorWith({ limits: { max_pages_per_fetch: 1 } }),
+      stream: { stream: "subreddit/t1", target: target({ source: "reddit", kind: "subreddit", value: "analytics" }) },
+      cursor: String(cursorSecs), cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    expect(debounceQuery(sql)[3]).toBe("subreddit/t1");
+  });
+
+  const video = (id: string, iso: string) => ({
+    id: { videoId: id },
+    snippet: { publishedAt: iso, title: `video ${id}`, description: "a description", channelTitle: "c", channelId: "UC1",
+      resourceId: { videoId: id } },
+  });
+
+  it("YouTube's channel (uploads) page-cap hold debounces on its stream", async () => {
+    vi.stubEnv("YOUTUBE_API_KEY", "yt-key");
+    const s = stubFetch([
+      { match: /\/channels\?/, response: { body: { items: [{ contentDetails: { relatedPlaylists: { uploads: "UUabc" } } }] } } },
+      { match: /\/playlistItems\?/, response: { body: { items: [video("v1", "2026-08-21T00:00:00Z")], nextPageToken: "P2" } } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await youtubeAdapter.fetch({
+      sql: sql.db, monitor: monitorWith({ limits: { max_pages_per_fetch: 1 } }),
+      stream: { stream: "channel/t1", target: target({ source: "youtube", kind: "channel", value: "UCabc" }) },
+      cursor: "2026-08-20T00:00:00.000Z", cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    expect(debounceQuery(sql)[3]).toBe("channel/t1");
+  });
+
+  it("YouTube's keyword-search remainder debounces on its stream", async () => {
+    vi.stubEnv("YOUTUBE_API_KEY", "yt-key");
+    const s = stubFetch([
+      { match: /\/search\?/, response: { body: { items: [video("v2", "2026-08-21T00:00:00Z")], nextPageToken: "P2" } } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await youtubeAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(),
+      stream: { stream: "search/t1", target: target({ source: "youtube", kind: "keyword", value: "acme" }) },
+      cursor: "2026-08-20T00:00:00.000Z", cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    expect((r.cursorMeta as { pending_until: string }).pending_until).toBe("2026-08-21T00:00:00.000Z");
+    expect(debounceQuery(sql)[3]).toBe("search/t1");
   });
 });
