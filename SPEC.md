@@ -353,7 +353,9 @@ Per-source notes (v1):
 - **appstore** (public feed, no credential — D23): `reviews/<cc>/<target>` per app target
   × storefront. Newest-first walk of `/<cc>/rss/customerreviews/id=<app>/sortBy=mostRecent/
   page=<n>/json` until the cursor (ISO `updated`), a short page, or Apple's 10-page cap.
-  Content = title + body; rating + app version into `context`; helpful votes → engagement.
+  Content = title + body (collapsed when one repeats the other); rating + app version
+  into `context`; helpful votes → engagement. Termination by `link[rel=last]`; an empty or
+  short page below it (Apple's transient blank pages) holds + `coverage_gap`.
 
 Fixture mode (D22): each adapter has `fixtures/*.json` of realistic payloads; a
 `FIXTURE_MODE=1` worker run replays them through the real parse→store→classify→themes

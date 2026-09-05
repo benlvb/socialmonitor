@@ -24,9 +24,17 @@ import { fixtureMode, loadFixture } from "./fixtures";
  * Streams: one per (target, storefront) named `reviews/<cc>/<target uuid>`; the
  * uuid suffix keeps the target-deletion cleanup (`stream like '%/<id>'`) working.
  *
+ * Termination: a healthy page carries `link[rel=last]`; a genuinely exhausted
+ * page past the end still carries it (`last` < page), while Apple's occasional
+ * TRANSIENT empty page mid-feed (probed: 4 of 30 app×storefront pairs, gone on
+ * retry) carries no links at all. So: a page at or past `last` ends the walk; an
+ * empty or short page BELOW `last`, or with no links at all, is an anomaly —
+ * the items already parsed are stored, the cursor HOLDS, and a `coverage_gap`
+ * warning is logged, because advancing would skip the missing page for good.
+ *
  * Cursor: ISO `updated` of the newest review seen. Walk newest-first until an
- * entry STRICTLY older than the cursor appears (window covered), the feed runs
- * out (short page), or Apple's page cap. The cap also counts as covered:
+ * entry STRICTLY older than the cursor appears (window covered), the feed ends
+ * per the links, or Apple's page cap. The cap also counts as covered:
  * nothing older is obtainable, so the cursor ADVANCES and a `coverage_lost`
  * error records what was skipped — holding there would re-walk 10 pages every
  * tick forever. Apple's cap bounds the walk to 500 reviews, so the shared
@@ -58,8 +66,21 @@ export interface RssEntry {
   "im:voteSum"?: RssLabel;
   "im:voteCount"?: RssLabel;
 }
+interface RssLink {
+  attributes?: { rel?: string; href?: string };
+}
 interface RssFeed {
-  feed?: { entry?: RssEntry | RssEntry[] };
+  feed?: { entry?: RssEntry | RssEntry[]; link?: RssLink | RssLink[] };
+}
+
+/** Page number from `link[rel=last]`, or null when the feed carries no links. */
+export function lastPageOf(feed: RssFeed): number | null {
+  const raw = feed.feed?.link;
+  if (!raw) return null;
+  const links = Array.isArray(raw) ? raw : [raw];
+  const last = links.find((l) => l.attributes?.rel === "last");
+  const m = last?.attributes?.href?.match(/page=(\d+)/);
+  return m ? Number(m[1]) : null;
 }
 
 /** Accepts a bare numeric id or an App Store URL containing `/id<digits>`. */
@@ -94,9 +115,20 @@ export function parseReview(
   if (Number.isNaN(postedAt.getTime())) return null;
   const title = (e.title?.label ?? "").trim();
   const body = (e.content?.label ?? "").trim();
-  // 5.6% of live reviews repeat the title as the body ("👎" / "👎"); joining
-  // them would double the text and defeat prefilter.min_chars (review F5).
-  const content = title && body && title === body ? title : [title, body].filter(Boolean).join("\n\n");
+  // ~5% of live reviews repeat the title as (or inside) the body — "👎"/"👎",
+  // "BEST"/"BEST APP"; joining them doubles text and defeats
+  // prefilter.min_chars (review F5). Keep whichever contains the other.
+  const t = title.toLowerCase();
+  const b = body.toLowerCase();
+  const content = !title
+    ? body
+    : !body
+      ? title
+      : b.includes(t)
+        ? body
+        : t.includes(b)
+          ? title
+          : `${title}\n\n${body}`;
   if (!content) return null;
   const rating = Number(e["im:rating"]?.label);
   const hasRating = Number.isFinite(rating) && rating >= 1 && rating <= 5;
@@ -213,6 +245,8 @@ export const appstoreAdapter: SourceAdapter = {
     const newer: RawItem[] = [];
     let dropped = 0;
     let feedCapped = false;
+    /** Set when a page came back empty/short below `last` or without links (review N1). */
+    let anomalyPage: number | null = null;
 
     for (let page = 1; page <= APPSTORE_FEED_PAGE_CAP; page++) {
       const { status, feed } = await fetchPage(cc, appId, page);
@@ -226,6 +260,15 @@ export const appstoreAdapter: SourceAdapter = {
         throw new TransientError(`appstore feed answered 400 on page ${page} after ${page - 1} full page(s); cursor held`);
       }
       const entries = entriesOf(feed);
+      const lastPage = lastPageOf(feed);
+      if (entries.length === 0 && lastPage !== null && page > lastPage) break; // past the end
+      if (entries.length === 0) {
+        // No links at all, or Apple still claims more pages: a transient empty
+        // page, not the end. Page 1 with nothing is also what an unserved
+        // storefront looks like — hold quietly; anything later is a gap.
+        if (page > 1) anomalyPage = page;
+        break;
+      }
       let reachedCursor = false;
       for (const e of entries) {
         const item = parseReview(monitor.id, stream.stream, cc, appId, e);
@@ -242,8 +285,30 @@ export const appstoreAdapter: SourceAdapter = {
         }
         newer.push(item);
       }
-      if (reachedCursor || entries.length < PAGE_SIZE) break;
+      if (reachedCursor) break;
+      if (lastPage !== null && page >= lastPage) break; // the feed says this is the last page
+      if (entries.length < PAGE_SIZE) {
+        // Short page: the end when the feed carries no page count, an anomaly
+        // when it says more pages exist.
+        if (lastPage !== null && page < lastPage) anomalyPage = page;
+        break;
+      }
       if (page === APPSTORE_FEED_PAGE_CAP) feedCapped = true;
+    }
+
+    if (anomalyPage !== null) {
+      // Store what was parsed, HOLD the cursor, say so: the next tick re-walks.
+      if (!(await hasEventToday(sql, monitor.id, "coverage_gap", stream.stream))) {
+        await logEvent(sql, {
+          monitorId: monitor.id,
+          source: "appstore",
+          stream: stream.stream,
+          level: "warn",
+          kind: "coverage_gap",
+          message: `Apple served an empty or short page ${anomalyPage} mid-feed; cursor held so the walk repeats next run (transient on Apple's side)`,
+        });
+      }
+      return { items: newer, nextCursor: null, ...(dropped > 0 ? { droppedCount: dropped } : {}) };
     }
 
     // The cursor advances over everything seen, edits included, so an edited

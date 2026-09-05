@@ -7,7 +7,7 @@ import { redditAdapter } from "../src/adapters/reddit";
 import { youtubeAdapter } from "../src/adapters/youtube";
 import { telegramAdapter } from "../src/adapters/telegram";
 import { discordAdapter, datetimeToSnowflake, snowflakeToDatetime } from "../src/adapters/discord";
-import { appstoreAdapter, parseAppId } from "../src/adapters/appstore";
+import { appstoreAdapter, parseAppId, parseReview } from "../src/adapters/appstore";
 
 const monitor: MonitorRow = {
   id: "00000000-0000-0000-0000-000000000001",
@@ -145,6 +145,18 @@ describe("appstore adapter (fixtures)", () => {
     } finally {
       process.env.FIXTURE_MODE = "1";
     }
+  });
+  it("collapses a title repeated inside the body instead of doubling it (review F5)", () => {
+    const entry = (title: string, body: string) => ({
+      id: { label: "1" }, title: { label: title }, content: { label: body },
+      updated: { label: "2026-08-20T13:30:00-07:00" }, author: { name: { label: "u" } },
+      "im:rating": { label: "4" }, "im:version": { label: "1.0" }, "im:voteSum": { label: "0" }, "im:voteCount": { label: "0" },
+    });
+    const parse = (t: string, b: string) => parseReview(monitor.id, "reviews/us/t1", "us", "1", entry(t, b))!.content;
+    expect(parse("BEST", "BEST APP")).toBe("BEST APP");
+    expect(parse("Crashes on launch", "crashes on launch every time")).toBe("crashes on launch every time");
+    expect(parse("Great app, one gripe", "Great")).toBe("Great app, one gripe");
+    expect(parse("Widgets broke", "Since 4.2 the home screen widgets show stale numbers.")).toBe("Widgets broke\n\nSince 4.2 the home screen widgets show stale numbers.");
   });
   it("parseAppId accepts ids and App Store URLs", () => {
     expect(parseAppId("310633997")).toBe("310633997");

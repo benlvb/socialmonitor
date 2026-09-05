@@ -359,6 +359,15 @@ describe("App Store cursor semantics", () => {
     "im:voteCount": { label: "3" },
   });
   const feed = (entries: unknown[]) => ({ feed: { entry: entries } });
+  /** A healthy Apple page carries first/previous/next/last links. */
+  const linked = (entries: unknown[], page: number, last: number) => ({
+    feed: {
+      entry: entries,
+      link: ["first", "previous", "next", "last"].map((rel) => ({
+        attributes: { rel, href: `https://itunes.apple.com/us/rss/customerreviews/page=${rel === "last" ? last : rel === "next" ? Math.min(page + 1, last) : rel === "previous" ? Math.max(page - 1, 1) : 1}/id=310633997/sortBy=mostRecent/json` },
+      })),
+    },
+  });
   /** A full 50-entry page, newest-first, all newer than the cursor. */
   const fullPage = (page: number) =>
     feed(Array.from({ length: 50 }, (_, k) => review(100_000 - page * 100 - k, iso(10_000 - page * 100 - k))));
@@ -525,11 +534,88 @@ describe("App Store cursor semantics", () => {
     expect(r.items.map((i) => i.externalId)).toEqual(["8"]);
     expect(r.nextCursor).toBe(iso(120));
     expect(r.droppedCount).toBeUndefined(); // an edit is not a parse failure
-    // Scoped to this stream: an id stored by another storefront must not
-    // suppress it here (review S1).
+    // Scoped to this stream so the query matches the edit case exactly
+    // (review S1; ids are disjoint across storefronts in practice).
     const dedupe = sql.calls.find((c) => /from raw_items/.test(c.text));
     expect(dedupe?.text).toContain("stream = ?");
     expect(dedupe?.values).toContain("reviews/us/t1");
+  });
+
+  it("a transient EMPTY page mid-feed (no links) holds the cursor and warns instead of skipping pages", async () => {
+    // Probed live: 4 of 30 app×storefront pairs served an empty page between
+    // two full ones (review N1). Advancing here orphaned pages 4..10.
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: linked(fullPage(1).feed.entry, 1, 10) } },
+      { match: /page=2\/json/, response: { body: linked(fullPage(2).feed.entry, 2, 10) } },
+      { match: /page=3\/json/, response: { body: { feed: {} } } },
+      { match: /page=4\/json/, response: { body: linked(fullPage(4).feed.entry, 4, 10) } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(100); // pages 1-2 still stored
+    expect(r.nextCursor).toBeNull(); // held: page 3's reviews are not skipped
+    expect(s.urls).toHaveLength(3); // page 4 not requested — the walk is contiguous or nothing
+    const gaps = eventsOfKind(sql, "coverage_gap");
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]!.values).toContain("warn");
+  });
+
+  it("a short page BELOW the feed's own `last` is an anomaly: hold + warn", async () => {
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: linked(fullPage(1).feed.entry, 1, 3) } },
+      { match: /page=2\/json/, response: { body: linked([review(7, iso(5))], 2, 3) } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(51);
+    expect(r.nextCursor).toBeNull();
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(1);
+  });
+
+  it("the feed's `last` link ends the walk: a full page 1 with last=1 advances without asking for page 2", async () => {
+    const s = stubFetch([{ match: /page=1\/json/, response: { body: linked(fullPage(1).feed.entry, 1, 1) } }]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(50);
+    expect(r.nextCursor).toBe(iso(10_000 - 100));
+    expect(s.urls).toHaveLength(1);
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0);
+  });
+
+  it("an empty page PAST `last` is the genuine end (small apps): advance, no warning", async () => {
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: linked(fullPage(1).feed.entry, 1, 2) } },
+      { match: /page=2\/json/, response: { body: linked([], 3, 1) } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(50);
+    expect(r.nextCursor).toBe(iso(10_000 - 100));
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0);
+  });
+
+  it("an empty page 1 with no links (unserved storefront or a blip) holds quietly", async () => {
+    const s = stubFetch([{ match: /page=1\/json/, response: { body: { feed: {} } } }]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toEqual([]);
+    expect(r.nextCursor).toBeNull();
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0);
   });
 
   it("expands one app target into one stream per configured storefront, uuid last", () => {
