@@ -52,17 +52,21 @@ export interface StubbedResponse {
  */
 export function stubFetch(script: { match: RegExp; response: StubbedResponse }[]): {
   urls: string[];
+  /** The `init` argument of each call, in order (null when the adapter passed none). */
+  inits: (Record<string, unknown> | null)[];
   restore: () => void;
 } {
   const urls: string[] = [];
+  const inits: (Record<string, unknown> | null)[] = [];
   const queue = [...script];
   const original = globalThis.fetch;
 
   // `input` is typed loosely on purpose: this package compiles without DOM
   // lib, so RequestInfo/Request are not in scope.
-  globalThis.fetch = (async (input: unknown) => {
+  globalThis.fetch = (async (input: unknown, init?: unknown) => {
     const url = typeof input === "string" ? input : String(input);
     urls.push(url);
+    inits.push((init as Record<string, unknown> | undefined) ?? null);
     const idx = queue.findIndex((s) => s.match.test(url));
     if (idx === -1) {
       throw new Error(`unstubbed fetch: ${url}`);
@@ -77,5 +81,5 @@ export function stubFetch(script: { match: RegExp; response: StubbedResponse }[]
     } as Response;
   }) as typeof fetch;
 
-  return { urls, restore: () => { globalThis.fetch = original; } };
+  return { urls, inits, restore: () => { globalThis.fetch = original; } };
 }

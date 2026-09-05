@@ -1,4 +1,4 @@
-export const SOURCES = ["x", "reddit", "youtube", "telegram", "discord", "appstore"] as const;
+export const SOURCES = ["x", "reddit", "youtube", "telegram", "discord", "appstore", "playstore"] as const;
 export type Source = (typeof SOURCES)[number];
 
 /** Integrations shown on the connections page (sources + LLM + notifier). */
@@ -8,6 +8,7 @@ export const INTEGRATIONS = [
   "youtube",
   "telegram_mtproto",
   "discord_bot",
+  "google_play",
   "anthropic",
   "telegram_notify",
 ] as const;
@@ -45,7 +46,7 @@ export const DEDUP_TOP_K = 40;
 export const DEDUP_POPULAR_FLOOR = 10;
 
 /** Sources with no impression metric — dashboard shows labeled follower-reach proxy (D15). */
-export const NO_IMPRESSION_SOURCES: readonly Source[] = ["reddit", "discord", "appstore"];
+export const NO_IMPRESSION_SOURCES: readonly Source[] = ["reddit", "discord", "appstore", "playstore"];
 
 /** Breaker trips after this many consecutive systemic failures on a stream. */
 export const BREAKER_THRESHOLD = 3;
@@ -58,6 +59,7 @@ export const TARGET_KINDS: Record<Source, readonly string[]> = {
   telegram: ["channel"],
   discord: ["guild"],
   appstore: ["app"],
+  playstore: ["app"],
 };
 
 /** Display labels for sources (UI). */
@@ -68,4 +70,5 @@ export const SOURCE_LABELS: Record<Source, string> = {
   telegram: "Telegram",
   discord: "Discord",
   appstore: "App Store",
+  playstore: "Google Play",
 };

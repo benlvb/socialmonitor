@@ -5,10 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 `socialmonitor` — configurable multi-source social monitoring: X, Reddit, YouTube,
-Telegram, Discord, App Store reviews (credential-less) → LLM classification (Haiku, Batch API) → deduped **themes** →
+Telegram, Discord, App Store reviews (credential-less), Google Play reviews (own apps) → LLM classification (Haiku, Batch API) → deduped **themes** →
 dashboard / `/ask` chat / weekly summaries (Sonnet) / Telegram alerts. Single-operator,
-self-hosted, MIT. **`SPEC.md` is the source of truth** (23 confirmed decisions,
-D1–D23); read it before designing anything. `docs/runbook/engineer.md` holds the working
+self-hosted, MIT. **`SPEC.md` is the source of truth** (24 confirmed decisions,
+D1–D24); read it before designing anything. `docs/runbook/engineer.md` holds the working
 invariants; `PROGRESS.md` is the checkpoint log. Status: complete and audited (three
 review passes, 109 tests) but **never run against live traffic** — every adapter was
 verified on recorded fixtures only.
@@ -57,8 +57,10 @@ rewrite for Discord, a bounded message-id rewind for Telegram, and a generic fal
 writes X-shaped `{pending_until, pending_newest}` meta (YouTube uses `pending_until` alone). A new source whose cursor lives in `cursor_meta`
 needs its own branch there or backfill is a silent no-op (audit #5).
 Incomplete windows (page cap, budget) hold and emit `coverage_gap` — see the
-`pending_until`/`pending_newest` pattern in `adapters/x.ts` and per-channel cursor maps
-in `adapters/discord.ts`.
+`pending_until`/`pending_newest` pattern in `adapters/x.ts`, the `pending_token`/`pending_newest`
+page-token resume in `adapters/playstore.ts`, and per-channel cursor maps in `adapters/discord.ts`.
+`hasEventToday` debounces events **per stream** — always pass `stream.stream`, or one source's
+gap silences every other's for the day (PR #2 review).
 
 **Classify has no cursor.** `classify/engine.ts` anti-joins `raw_items` against
 `item_classifications`; the Anthropic batch is *submitted on one tick and collected on

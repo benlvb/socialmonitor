@@ -21,6 +21,7 @@ const SOURCE_VAR: Record<Source, string> = {
   telegram: "var(--series-4)",
   discord: "var(--series-5)",
   appstore: "var(--series-6)",
+  playstore: "var(--series-7)",
 };
 
 const axisProps = {

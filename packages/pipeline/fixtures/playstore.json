@@ -1,0 +1,88 @@
+[
+  {
+    "reviewId": "gp:AOqpTOF3x9q1LongText0001",
+    "authorName": "Daniel O",
+    "comments": [
+      {
+        "userComment": {
+          "text": "Mixed feelings after a month\tI run a small agency and we moved our whole reporting stack onto this app. The dashboards are genuinely good and sharing to clients works. But the sync engine is fragile: twice this month the numbers on my phone were a day behind the web app, and support asked me to log out and back in each time, which drops all my saved filters. Export to CSV is still missing after two years of requests. I want to love this, and I will bump the rating the day sync becomes boring.",
+          "lastModified": { "seconds": "1787390100", "nanos": 0 },
+          "starRating": 2,
+          "reviewerLanguage": "en",
+          "device": "Pixel 8",
+          "androidOsVersion": 34,
+          "appVersionCode": 420,
+          "appVersionName": "4.2.0",
+          "thumbsUpCount": 21,
+          "thumbsDownCount": 1
+        }
+      },
+      {
+        "developerComment": {
+          "text": "Thanks Daniel — the stale-sync bug is fixed in 4.2.1 (rolling out this week) and CSV export is in beta.",
+          "lastModified": { "seconds": "1787400000", "nanos": 0 }
+        }
+      }
+    ]
+  },
+  {
+    "reviewId": "gp:AOqpTOF3x9q1Crash0002",
+    "authorName": "Priya N",
+    "comments": [
+      {
+        "userComment": {
+          "text": "Crashes on launch since 4.2. Opens for a second, shows the dashboard list, then closes. Cleared cache, reinstalled, same thing on a Galaxy S23.",
+          "lastModified": { "seconds": "1787337612", "nanos": 0 },
+          "starRating": 1,
+          "reviewerLanguage": "en",
+          "device": "SM-S911B",
+          "androidOsVersion": 34,
+          "appVersionCode": 420,
+          "appVersionName": "4.2.0",
+          "thumbsUpCount": 14,
+          "thumbsDownCount": 0
+        }
+      }
+    ]
+  },
+  {
+    "reviewId": "gp:AOqpTOF3x9q1Feature0003",
+    "authorName": "Marcus L",
+    "comments": [
+      {
+        "userComment": {
+          "text": "Solid app, but please add CSV export. PDF-only is useless for our finance team. Five stars the day it ships.",
+          "lastModified": { "seconds": "1787295765", "nanos": 0 },
+          "starRating": 3,
+          "reviewerLanguage": "en",
+          "device": "Pixel 7a",
+          "androidOsVersion": 34,
+          "appVersionCode": 413,
+          "appVersionName": "4.1.3",
+          "thumbsUpCount": 6,
+          "thumbsDownCount": 0
+        }
+      }
+    ]
+  },
+  {
+    "reviewId": "gp:AOqpTOF3x9q1Positive0004",
+    "authorName": "Jia Chen",
+    "comments": [
+      {
+        "userComment": {
+          "text": "Best dashboard app I have used. Sharing a board with the team is one tap and the charts look great on a phone. Worth every cent.",
+          "lastModified": { "seconds": "1787232600", "nanos": 0 },
+          "starRating": 5,
+          "reviewerLanguage": "en",
+          "device": "Pixel 8 Pro",
+          "androidOsVersion": 34,
+          "appVersionCode": 413,
+          "appVersionName": "4.1.3",
+          "thumbsUpCount": 9,
+          "thumbsDownCount": 0
+        }
+      }
+    ]
+  }
+]

@@ -36,7 +36,7 @@ There is no hosted version. You run your own.
 ## How it works
 
 ```
-  X · Reddit · YouTube · Telegram · Discord · App Store   (any subset, per monitor)
+  X · Reddit · YouTube · Telegram · Discord · App Store · Google Play   (any subset, per monitor)
         │ fetch (cursored, budgeted)
         ▼
   raw_items ──► LLM classifier ──► themes (deduped, ranked by unique authors)
@@ -86,7 +86,7 @@ Each step is independent. Stop at any point; everything done so far keeps workin
    (`00001` schema + RLS + pgmq queue + pg_cron producer · `00002` dashboard aggregate
    functions · `00003` partition RLS + producer hardening + event scoping ·
    `00004` classification-call accounting · `00005` signup allowlist · `00006` App Store
-   target kinds):
+   target kinds · `00007` Google Play source + credential):
    ```sh
    cd packages/db
    npx supabase login
@@ -165,6 +165,7 @@ button per integration) or as env vars — Vault wins when both exist.
 | **Telegram** | A **dedicated account on a spare number** (never your personal one). Get `api_id`/`api_hash` at [my.telegram.org](https://my.telegram.org), then run the session generator: `TELEGRAM_MTPROTO_API_ID=… TELEGRAM_MTPROTO_API_HASH=… pnpm --filter @socialmonitor/pipeline exec tsx ../../scripts/telegram-session.ts`. One session string = one consumer: don't run two worker replicas on it (Telegram invalidates duplicated sessions). | `TELEGRAM_MTPROTO_API_ID` `TELEGRAM_MTPROTO_API_HASH` `TELEGRAM_MTPROTO_SESSION` |
 | **Discord** | [discord.com/developers](https://discord.com/developers/applications) → bot → enable the **MESSAGE_CONTENT** privileged intent → invite to your server with channel-level view permissions | `DISCORD_BOT_TOKEN` |
 | **App Store** | Nothing — Apple's public customer-reviews feed, any app (yours or a competitor's). Newest **500 reviews per storefront**; storefronts per monitor in `limits.appstore_storefronts` (default `["us"]`) | — |
+| **Google Play** | Google Cloud Console → service account → JSON key; Play Console → Users and permissions → invite that service account with **View app information**. Official Android Publisher API: **your own apps only**, reviews from the **last ~7 days** (a backfill cannot reach further). Paste the key JSON as one line | `GOOGLE_SERVICE_ACCOUNT_JSON` |
 | **Alerts** | BotFather → `/newbot` (a fresh bot). Add it to a private channel/group, post once, read the chat id from `https://api.telegram.org/bot<token>/getUpdates` | `TELEGRAM_NOTIFY_BOT_TOKEN` `TELEGRAM_NOTIFY_CHAT_ID` |
 
 ## Your first monitor
@@ -183,6 +184,7 @@ with [BRACKETED] placeholders to edit. Then on the settings page:
 | telegram | `channel` (public username) |
 | discord | `guild` (server id — bot must be in it) |
 | appstore | `app` (numeric App Store id, or the app's App Store URL) |
+| playstore | `app` (package name such as `com.acme.app`, or the Play Store URL carrying `?id=`) |
 
 **Configuration JSON** — the classifier's brain. Every field is runtime-editable; the
 pipeline picks changes up on its next tick. The editor shows the fully-defaulted config;

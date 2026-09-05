@@ -7,6 +7,14 @@ import { redditAdapter } from "../src/adapters/reddit";
 import { discordAdapter } from "../src/adapters/discord";
 import { appstoreAdapter, lastPageOf } from "../src/adapters/appstore";
 import { youtubeAdapter } from "../src/adapters/youtube";
+import {
+  buildJwt,
+  parsePackageName,
+  parseServiceAccount,
+  playstoreAdapter,
+  resetPlayTokenCache,
+} from "../src/adapters/playstore";
+import { createVerify, generateKeyPairSync } from "node:crypto";
 
 /**
  * Adapter-level cursor semantics. Every case here corresponds to a real bug an
@@ -832,5 +840,292 @@ describe("coverage_gap debounce is scoped per stream (review of PR #2)", () => {
     expect(r.nextCursor).toBeNull();
     expect((r.cursorMeta as { pending_until: string }).pending_until).toBe("2026-08-21T00:00:00.000Z");
     expect(debounceQuery(sql)[3]).toBe("search/t1");
+  });
+});
+
+describe("Google Play cursor semantics", () => {
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  const EMAIL = "svc@proj.iam.gserviceaccount.com";
+  const SA = JSON.stringify({ type: "service_account", client_email: EMAIL, private_key: privateKey, token_uri: "https://oauth2.googleapis.com/token" });
+  const tokenStub = { match: /oauth2\.googleapis\.com\/token/, response: { body: { access_token: "tok", expires_in: 3600 } } };
+  const PKG = "com.acme.app";
+  const CURSOR = "2026-08-20T00:00:00.000Z";
+  const cursorSecs = Math.floor(Date.parse(CURSOR) / 1000);
+  const iso = (secs: number) => new Date(secs * 1000).toISOString();
+  const review = (id: string, seconds: number, extra: Record<string, unknown> = {}, text = `review ${id} with enough words to pass the prefilter`) => ({
+    reviewId: id,
+    authorName: `author ${id}`,
+    comments: [{ userComment: { text, lastModified: { seconds: String(seconds), nanos: 0 }, starRating: 4, reviewerLanguage: "en", appVersionName: "4.2.0", thumbsUpCount: 3, ...extra } }],
+  });
+  const page = (reviews: unknown[], nextPageToken?: string) => ({ reviews, ...(nextPageToken ? { tokenPagination: { nextPageToken } } : {}) });
+  const PAGE1 = /reviews\?maxResults=100$/;
+  const pageWith = (tok: string) => new RegExp(`reviews\\?maxResults=100&token=${tok}$`);
+  const streamDef = { stream: "reviews/t1", target: target({ source: "playstore", kind: "app", value: PKG }) };
+  const eventsOfKind = (sql: ReturnType<typeof fakeSql>, kind: string) =>
+    sql.calls.filter((c) => /insert into pipeline_events/.test(c.text) && c.values.includes(kind));
+  const debounce = (sql: ReturnType<typeof fakeSql>) => sql.calls.find((c) => /from pipeline_events where kind = \?/.test(c.text));
+
+  beforeEach(() => {
+    vi.stubEnv("GOOGLE_SERVICE_ACCOUNT_JSON", SA);
+    resetPlayTokenCache();
+  });
+
+  it("forward-only first sync: records now and makes no network call at all", async () => {
+    const s = stubFetch([]);
+    restore = s.restore;
+    const before = Date.now();
+    const r = await playstoreAdapter.fetch({ sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: null, cursorMeta: {} });
+    expect(r.items).toEqual([]);
+    expect(Date.parse(r.nextCursor!)).toBeGreaterThanOrEqual(before - 1000);
+    expect(s.urls).toEqual([]);
+  });
+
+  it("no service account is a state, not an error: status unconfigured, fetch skips silently", async () => {
+    vi.stubEnv("GOOGLE_SERVICE_ACCOUNT_JSON", "");
+    const s = stubFetch([]);
+    restore = s.restore;
+    const sql = fakeSql();
+    expect((await playstoreAdapter.status(sql.db, "owner")).configured).toBe(false);
+    const r = await playstoreAdapter.fetch({ sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} });
+    expect(r).toEqual({ items: [], nextCursor: null });
+    expect(s.urls).toEqual([]);
+  });
+
+  it("a present-but-malformed key file is systemic (breaker), never silent", async () => {
+    vi.stubEnv("GOOGLE_SERVICE_ACCOUNT_JSON", JSON.stringify({ client_email: EMAIL }));
+    const s = stubFetch([]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const status = await playstoreAdapter.status(sql.db, "owner");
+    expect(status.configured).toBe(true);
+    expect(status.detail).toMatch(/not a service-account key/);
+    await expect(
+      playstoreAdapter.fetch({ sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} }),
+    ).rejects.toBeInstanceOf(SystemicError);
+    expect(s.urls).toEqual([]);
+    expect(parseServiceAccount("not json")).toBeNull();
+    expect(parseServiceAccount(SA)?.client_email).toBe(EMAIL);
+  });
+
+  it("walking back to the cursor covers the window: newer items stored, cursor = newest lastModified, meta cleared", async () => {
+    const s = stubFetch([
+      tokenStub,
+      { match: PAGE1, response: { body: page([review("a", cursorSecs + 300), review("b", cursorSecs + 200), review("old", cursorSecs - 1)], "P2") } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await playstoreAdapter.fetch({ sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} });
+    expect(r.items.map((i) => i.externalId)).toEqual(["a", "b"]);
+    expect(r.nextCursor).toBe(iso(cursorSecs + 300));
+    expect(r.cursorMeta).toEqual({ pending_token: null, pending_newest: null });
+    expect(s.urls.filter((u) => /reviews/.test(u))).toHaveLength(1); // page 2 never requested
+    expect(s.urls[1]).toContain(`/applications/${PKG}/reviews`);
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0);
+  });
+
+  it("a review in the cursor's own second is kept, not skipped as covered (strict <)", async () => {
+    const s = stubFetch([tokenStub, { match: PAGE1, response: { body: page([review("same", cursorSecs), review("old", cursorSecs - 5)]) } }]);
+    restore = s.restore;
+    const r = await playstoreAdapter.fetch({ sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} });
+    expect(r.items.map((i) => i.externalId)).toEqual(["same"]);
+  });
+
+  it("page budget exhausted with pages remaining: HOLD, remember Google's token and the newest seen, warn once per stream", async () => {
+    const s = stubFetch([
+      tokenStub,
+      { match: PAGE1, response: { body: page([review("a", cursorSecs + 300), review("b", cursorSecs + 200)], "P2") } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await playstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith({ limits: { max_pages_per_fetch: 1 } }), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toHaveLength(2); // stored
+    expect(r.nextCursor).toBeNull(); // held: page 2 may hold reviews newer than the cursor
+    expect(r.cursorMeta).toEqual({ pending_token: "P2", pending_newest: iso(cursorSecs + 300) });
+    const gaps = eventsOfKind(sql, "coverage_gap");
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]!.values).toContain("warn");
+    expect(debounce(sql)!.values[3]).toBe("reviews/t1"); // scoped to this stream
+  });
+
+  it("resumes from the remembered token, then advances to the remembered newest once the walk completes", async () => {
+    const s = stubFetch([
+      tokenStub,
+      { match: pageWith("P2"), response: { body: page([review("c", cursorSecs + 100), review("old", cursorSecs - 100)], "P3") } },
+    ]);
+    restore = s.restore;
+    const r = await playstoreAdapter.fetch({
+      sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR,
+      cursorMeta: { pending_token: "P2", pending_newest: iso(cursorSecs + 300) },
+    });
+    expect(s.urls.filter((u) => /reviews/.test(u))).toEqual([expect.stringMatching(/token=P2$/)]); // no page 1
+    expect(r.items.map((i) => i.externalId)).toEqual(["c"]);
+    expect(r.nextCursor).toBe(iso(cursorSecs + 300)); // the newest from the FIRST run, not c
+    expect(r.cursorMeta).toEqual({ pending_token: null, pending_newest: null });
+  });
+
+  it("a rejected (stale) resume token restarts the walk from page 1 instead of throwing", async () => {
+    const s = stubFetch([
+      tokenStub,
+      { match: pageWith("STALE"), response: { status: 400, body: { error: { code: 400, message: "Invalid page token" } } } },
+      { match: PAGE1, response: { body: page([review("a", cursorSecs + 300), review("old", cursorSecs - 10)]) } },
+    ]);
+    restore = s.restore;
+    const r = await playstoreAdapter.fetch({
+      sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR,
+      cursorMeta: { pending_token: "STALE", pending_newest: null },
+    });
+    expect(s.urls.filter((u) => /reviews/.test(u)).map((u) => u.split("?")[1])).toEqual(["maxResults=100&token=STALE", "maxResults=100"]);
+    expect(r.items.map((i) => i.externalId)).toEqual(["a"]);
+    expect(r.nextCursor).toBe(iso(cursorSecs + 300));
+  });
+
+  it("a 400 on a fresh walk (no resume token) is systemic", async () => {
+    const s = stubFetch([tokenStub, { match: PAGE1, response: { status: 400, body: { error: { code: 400 } } } }]);
+    restore = s.restore;
+    await expect(
+      playstoreAdapter.fetch({ sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} }),
+    ).rejects.toBeInstanceOf(SystemicError);
+  });
+
+  it("an edited review (id already stored on this stream) is dropped, but the cursor still moves past it", async () => {
+    const s = stubFetch([tokenStub, { match: PAGE1, response: { body: page([review("a", cursorSecs + 300), review("b", cursorSecs + 200), review("old", cursorSecs - 1)]) } }]);
+    restore = s.restore;
+    const sql = fakeSql();
+    sql.when(/from raw_items/, [{ external_id: "a" }]);
+    const r = await playstoreAdapter.fetch({ sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} });
+    expect(r.items.map((i) => i.externalId)).toEqual(["b"]);
+    expect(r.nextCursor).toBe(iso(cursorSecs + 300));
+    const dedupe = sql.calls.find((c) => /from raw_items/.test(c.text))!;
+    expect(dedupe.values).toContain("reviews/t1"); // scoped to this stream
+  });
+
+  it("404 (unknown package or no Play Console access) and 403 are systemic: breaker, cursor untouched", async () => {
+    for (const status of [404, 403]) {
+      resetPlayTokenCache();
+      const s = stubFetch([tokenStub, { match: PAGE1, response: { status, body: { error: { code: status } } } }]);
+      await expect(
+        playstoreAdapter.fetch({ sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} }),
+      ).rejects.toBeInstanceOf(SystemicError);
+      s.restore();
+    }
+  });
+
+  it("429 and 5xx are transient (cursor held, retried); so is a network failure", async () => {
+    for (const status of [429, 503]) {
+      resetPlayTokenCache();
+      const s = stubFetch([tokenStub, { match: PAGE1, response: { status, body: {} } }]);
+      await expect(
+        playstoreAdapter.fetch({ sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} }),
+      ).rejects.toBeInstanceOf(TransientError);
+      s.restore();
+    }
+    resetPlayTokenCache();
+    const s = stubFetch([tokenStub]); // the reviews call itself is unstubbed → fetch throws
+    restore = s.restore;
+    await expect(
+      playstoreAdapter.fetch({ sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} }),
+    ).rejects.toBeInstanceOf(TransientError);
+  });
+
+  it("a rejected token exchange (400 invalid_grant) is systemic; a 503 from the token endpoint is transient", async () => {
+    let s = stubFetch([{ match: /oauth2\.googleapis\.com\/token/, response: { status: 400, body: { error: "invalid_grant" } } }]);
+    await expect(
+      playstoreAdapter.fetch({ sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} }),
+    ).rejects.toBeInstanceOf(SystemicError);
+    s.restore();
+    resetPlayTokenCache();
+    s = stubFetch([{ match: /oauth2\.googleapis\.com\/token/, response: { status: 503, body: {} } }]);
+    restore = s.restore;
+    await expect(
+      playstoreAdapter.fetch({ sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} }),
+    ).rejects.toBeInstanceOf(TransientError);
+  });
+
+  it("the bearer token is cached: two fetches, one token exchange", async () => {
+    const s = stubFetch([
+      tokenStub,
+      { match: PAGE1, response: { body: page([review("old", cursorSecs - 1)]) } },
+      { match: PAGE1, response: { body: page([review("old", cursorSecs - 1)]) } },
+    ]);
+    restore = s.restore;
+    const ctx = { sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} };
+    await playstoreAdapter.fetch(ctx);
+    await playstoreAdapter.fetch(ctx);
+    expect(s.urls.filter((u) => /token$/.test(u))).toHaveLength(1);
+    expect(s.urls.filter((u) => /reviews/.test(u))).toHaveLength(2);
+  });
+
+  it("the JWT is RS256-signed by the service account and carries the androidpublisher scope", async () => {
+    const s = stubFetch([tokenStub, { match: PAGE1, response: { body: page([]) } }]);
+    restore = s.restore;
+    await playstoreAdapter.fetch({ sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} });
+    const init = s.inits[0]!;
+    expect(init.method).toBe("POST");
+    const form = new URLSearchParams(String(init.body));
+    expect(form.get("grant_type")).toBe("urn:ietf:params:oauth:grant-type:jwt-bearer");
+    const [h, c, sig] = form.get("assertion")!.split(".");
+    expect(JSON.parse(Buffer.from(h!, "base64url").toString())).toEqual({ alg: "RS256", typ: "JWT" });
+    const claims = JSON.parse(Buffer.from(c!, "base64url").toString());
+    expect(claims.iss).toBe(EMAIL);
+    expect(claims.scope).toBe("https://www.googleapis.com/auth/androidpublisher");
+    expect(claims.aud).toBe("https://oauth2.googleapis.com/token");
+    expect(claims.exp - claims.iat).toBe(3600);
+    expect(createVerify("RSA-SHA256").update(`${h}.${c}`).verify(publicKey, sig!, "base64url")).toBe(true);
+    // the same key signs deterministically-structured tokens; a different iat changes the claims
+    expect(buildJwt(parseServiceAccount(SA)!, 1_000).split(".")[1]).not.toBe(buildJwt(parseServiceAccount(SA)!, 2_000).split(".")[1]);
+    // the reviews call carries the bearer token
+    expect((s.inits[1]!.headers as Record<string, string>).Authorization).toBe("Bearer tok");
+  });
+
+  it("expands one app target into one reviews/<uuid> stream; other kinds are ignored", () => {
+    const streams = playstoreAdapter.streams(monitorWith(), [
+      target({ id: "aaa", source: "playstore", kind: "app", value: PKG }),
+      target({ id: "bbb", source: "playstore", kind: "keyword", value: "acme" }),
+    ]);
+    expect(streams.map((s) => s.stream)).toEqual(["reviews/aaa"]);
+    expect(streams[0]!.target?.id).toBe("aaa");
+  });
+
+  it("a target that is not a package name fails systemically before any network call", async () => {
+    const s = stubFetch([]);
+    restore = s.restore;
+    await expect(
+      playstoreAdapter.fetch({
+        sql: fakeSql().db, monitor: monitorWith(), cursor: CURSOR, cursorMeta: {},
+        stream: { stream: "reviews/t1", target: target({ source: "playstore", kind: "app", value: "Acme Widgets" }) },
+      }),
+    ).rejects.toBeInstanceOf(SystemicError);
+    expect(s.urls).toEqual([]);
+    expect(parsePackageName("https://play.google.com/store/apps/details?id=com.acme.app&hl=en")).toBe("com.acme.app");
+    expect(parsePackageName(" com.acme.app ")).toBe("com.acme.app");
+    expect(parsePackageName("com")).toBeNull();
+    expect(parsePackageName("https://play.google.com/store/apps/details?id=1bad")).toBeNull();
+  });
+
+  it("item shape: tab-joined title becomes a paragraph break, developer reply and rating ride in context, thumbs-up is engagement", async () => {
+    const withReply = {
+      ...review("r1", cursorSecs + 60, { starRating: 2, thumbsUpCount: 14, device: "Pixel 8" }, "Great title\tThe body text here, long enough."),
+    };
+    (withReply.comments as unknown[]).push({ developerComment: { text: "Thanks, fixed in 4.3", lastModified: { seconds: String(cursorSecs + 120) } } });
+    const s = stubFetch([tokenStub, { match: PAGE1, response: { body: page([withReply, { reviewId: "no-text", comments: [{ userComment: { text: "", lastModified: { seconds: String(cursorSecs + 30) } } }] }]) } }]);
+    restore = s.restore;
+    const r = await playstoreAdapter.fetch({ sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} });
+    expect(r.items).toHaveLength(1);
+    expect(r.droppedCount).toBe(1); // the empty-text review is a parse drop, not a crash
+    const item = r.items[0]!;
+    expect(item.content).toBe("Great title\n\nThe body text here, long enough.");
+    expect(item.context).toEqual({ channel_name: "Google Play", rating: 2, app_version: "4.2.0", developer_reply: "Thanks, fixed in 4.3" });
+    expect(item.metrics.thumbs_up).toBe(14);
+    expect(item.metrics.device).toBe("Pixel 8");
+    expect(item.engagement).toBe(14);
+    expect(item.impressions).toBeNull();
+    expect(item.url).toBe(`https://play.google.com/store/apps/details?id=${PKG}&reviewId=r1`);
+    expect(item.postedAt.toISOString()).toBe(iso(cursorSecs + 60));
   });
 });

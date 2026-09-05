@@ -56,6 +56,14 @@ const CARDS = [
     env: ["DISCORD_BOT_TOKEN"],
   },
   {
+    integration: "google_play",
+    title: "Google Play (own apps)",
+    description:
+      "Service-account key JSON, invited in the Play Console with 'View app information'. Official API: your own apps only, reviews from the last ~7 days (D24).",
+    fields: [{ name: "GOOGLE_SERVICE_ACCOUNT_JSON", label: "Service account JSON (one line)", secret: true }],
+    env: ["GOOGLE_SERVICE_ACCOUNT_JSON"],
+  },
+  {
     integration: "telegram_notify",
     title: "Telegram alerts (notifier)",
     description: "A fresh bot from BotFather (D19) + the chat/channel id alerts and weekly summaries post to.",
