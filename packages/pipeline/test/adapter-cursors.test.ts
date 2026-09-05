@@ -1050,6 +1050,33 @@ describe("Google Play cursor semantics", () => {
     expect(s.urls.filter((u) => /token$/.test(u))).toHaveLength(2);
   });
 
+  it("a rejected token whose restart ends BEFORE the cursor holds one more run instead of advancing over the gap", async () => {
+    // Pages between the old token and the cursor were fetched by no run; if Google now
+    // serves an empty untokened list, that may be transient — give it one more look.
+    const s = stubFetch([
+      tokenStub,
+      { match: pageWith("STALE"), response: { status: 400, body: {} } },
+      { match: PAGE1, response: { body: {} } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await playstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR,
+      cursorMeta: { pending_token: "STALE", pending_newest: iso(cursorSecs + 300) },
+    });
+    expect(r.nextCursor).toBeNull();
+    expect(r.cursorMeta).toEqual({ pending_token: null, pending_newest: iso(cursorSecs + 300) });
+    const gaps = eventsOfKind(sql, "coverage_gap");
+    expect(gaps).toHaveLength(1);
+    expect(String(gaps[0]!.values.find((v) => typeof v === "string" && /rejected the remembered page token/.test(v)))).toContain("held for one more run");
+    // next run: nothing to resume, Google still empty → covered as far as Google knows: advance to the remembered newest
+    const s2 = stubFetch([{ match: PAGE1, response: { body: {} } }]);
+    restore = () => { s2.restore(); s.restore(); };
+    const r2 = await playstoreAdapter.fetch({ sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: r.cursorMeta ?? {} });
+    expect(r2.nextCursor).toBe(iso(cursorSecs + 300));
+    expect(r2.cursorMeta).toEqual({ pending_token: null, pending_newest: null });
+  });
+
   it("a 400 on a fresh walk (no resume token) is systemic", async () => {
     const s = stubFetch([tokenStub, { match: PAGE1, response: { status: 400, body: { error: { code: 400 } } } }]);
     restore = s.restore;

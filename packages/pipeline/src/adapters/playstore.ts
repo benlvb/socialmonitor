@@ -342,6 +342,8 @@ export const playstoreAdapter: SourceAdapter = {
     let dropped = 0;
     let pageToken: string | undefined = meta.pending_token || undefined;
     let resuming = pageToken !== undefined;
+    let restarted = false; // a remembered token was rejected this run
+    let coveredToCursor = false; // some page reached an entry older than the cursor
     let completed = false;
 
     for (let page = 0; page < maxPages; page++) {
@@ -353,6 +355,7 @@ export const playstoreAdapter: SourceAdapter = {
           console.warn(`[playstore] ${stream.stream}: resume token rejected; restarting the walk from page 1`);
           pageToken = undefined;
           resuming = false;
+          restarted = true;
           continue;
         }
         throw new SystemicError(`playstore API rejected the reviews request for ${pkg} (400)`);
@@ -378,12 +381,20 @@ export const playstoreAdapter: SourceAdapter = {
       // that still carries one is not the end (proto3 JSON omits empty `reviews`),
       // so only the cursor or a missing token ends the walk; maxPages bounds it.
       const next = data.tokenPagination?.nextPageToken;
+      if (reachedCursor) coveredToCursor = true;
       if (reachedCursor || !next) {
         completed = true;
         pageToken = undefined;
         break;
       }
       pageToken = next;
+    }
+    if (completed && restarted && !coveredToCursor) {
+      // The restart after a rejected token hit the end of Google's list without reaching
+      // the cursor: the pages between the old token and the cursor were fetched by no run.
+      // Hold once more (token gone, newest kept) so a transient blank gets a second look;
+      // the next run walks fresh and, if Google still has nothing, advances.
+      completed = false;
     }
 
     // Drop ids already stored ON THIS STREAM (edits, the boundary review) — on the
@@ -416,7 +427,9 @@ export const playstoreAdapter: SourceAdapter = {
         stream: stream.stream,
         level: "warn",
         kind: "coverage_gap",
-        message: `the run budget (limits.max_pages_per_fetch = ${maxPages}) ran out before the walk reached the cursor; cursor held, the walk resumes from Google's page token next run`,
+        message: restarted && !pageToken
+          ? "Google rejected the remembered page token and the fresh walk ended before reaching the cursor; cursor held for one more run"
+          : `the run budget (limits.max_pages_per_fetch = ${maxPages}) ran out before the walk reached the cursor; cursor held, the walk resumes from Google's page token next run`,
       });
     }
     return {
