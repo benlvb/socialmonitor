@@ -12,7 +12,9 @@ import { fileURLToPath } from "node:url";
 const rootEnv = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../.env");
 try {
   if (existsSync(rootEnv)) process.loadEnvFile(rootEnv);
-} catch {
+} catch (err) {
   // Unreadable or vanished file: the worker must still start (template-first —
-  // an unconfigured DATABASE_URL is a state, not a crash).
+  // an unconfigured DATABASE_URL is a state, not a crash) — but say why the
+  // file it found did not load, or "idle (unconfigured)" is a mystery.
+  console.warn(`[env] found ${rootEnv} but could not load it: ${String(err)}`);
 }
