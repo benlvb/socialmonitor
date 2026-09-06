@@ -215,9 +215,8 @@ async function fetchPage(
  * id" pages a false error on a valid target; only a per-storefront sweep is
  * evidence about the id itself.
  */
-async function lookupCount(appId: string, cc?: string): Promise<number | null> {
-  const url =
-    `${RSS_HOST}/lookup?id=${encodeURIComponent(appId)}` + (cc ? `&country=${encodeURIComponent(cc)}` : "");
+async function lookupCount(appId: string, cc: string): Promise<number | null> {
+  const url = `${RSS_HOST}/lookup?id=${encodeURIComponent(appId)}&country=${encodeURIComponent(cc)}`;
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
     if (!res.ok) return null;
@@ -391,18 +390,32 @@ export const appstoreAdapter: SourceAdapter = {
         // the answer that matters is whether ANY storefront this monitor reads
         // carries it. Stop at the first hit; the whole block runs once a day.
         let servedIn: string | null = null;
+        let swept = 0;
+        let sweepUnreachable = false;
         if (here === 0) {
           for (const other of monitor.config.limits.appstore_storefronts) {
             if (other === cc) continue;
+            swept++;
             const n = await lookupCount(appId, other);
-            if (n !== null && n >= 1) {
+            // A failed lookup is not a "no" — conflating them manufactures the
+            // very false error this branch exists to avoid.
+            if (n === null) {
+              sweepUnreachable = true;
+              continue;
+            }
+            if (n >= 1) {
               servedIn = other;
               break;
             }
           }
         }
         const configured = monitor.config.limits.appstore_storefronts.join(", ");
-        const missing = here === 0 && servedIn === null;
+        // Escalate only when the search both RAN and COMPLETED. `swept > 0`
+        // matters because appstore_storefronts defaults to ["us"]: on a default
+        // monitor the loop's only entry is `cc` itself, so nothing is measured
+        // about the id and calling it wrong would page on no evidence — 93 of
+        // 310 real apps are simply absent from `us`. Everything else is info.
+        const missing = here === 0 && servedIn === null && swept > 0 && !sweepUnreachable;
         await logEvent(sql, {
           monitorId: monitor.id,
           source: "appstore",
@@ -415,17 +428,23 @@ export const appstoreAdapter: SourceAdapter = {
           kind: "target_unavailable",
           // Each branch claims only what was measured.
           message: missing
-            ? `app id ${appId} resolves in none of this monitor's storefronts (${configured}) — the target value is likely wrong and this stream will never produce items`
+            ? `app id ${appId} resolves in none of this monitor's storefronts (${configured}) — either the id is wrong or this monitor does not read the storefront that carries it; the stream produces nothing either way`
             : here === null
               ? `storefront ${cc} returned an empty feed for app ${appId} and Apple's lookup could not be reached, so the cause is unconfirmed; cursor held`
               : here >= 1
                 ? `app ${appId} is served in ${cc} but has no reviews there yet; cursor held`
-                : `app ${appId} is not served in storefront ${cc} (Apple serves it in ${servedIn}) — drop this storefront or the stream stays empty`,
+                : servedIn !== null
+                  ? `app ${appId} is not served in storefront ${cc} (Apple serves it in ${servedIn}) — drop this storefront or the stream stays empty`
+                  : sweepUnreachable
+                    ? `app ${appId} is not served in storefront ${cc}; Apple's lookup could not be reached for the other storefronts, so whether the id itself is valid is unconfirmed`
+                    : `app ${appId} is not served in storefront ${cc}, and this monitor reads no other storefront to check the id against (${configured}) — add a storefront that carries it, or verify the id`,
           meta: {
             app_id: appId,
             storefront: cc,
             lookup_storefront: here,
             served_in: servedIn,
+            storefronts_swept: swept,
+            sweep_unreachable: sweepUnreachable,
             storefronts_checked: monitor.config.limits.appstore_storefronts,
           },
         });
