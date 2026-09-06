@@ -20,7 +20,7 @@ deploy, no code change.
 
 The system is **complete but not yet battle-tested against live traffic.** All
 six sources, the classifier, the dashboard, `/ask`, and weekly summaries are
-built; the suite is green (143 tests, including mutation-verified cursor tests);
+built; the suite is green (145 tests, including mutation-verified cursor tests);
 three review passes (one automated, two full-repo model audits) have been
 applied. What has *not* happened is a production run: the adapters were
 verified against recorded fixtures and each platform's documented behaviour,
@@ -65,7 +65,7 @@ There is no hosted version. You run your own.
 ```sh
 git clone https://github.com/benlvb/socialmonitor && cd socialmonitor
 pnpm install
-pnpm typecheck && pnpm test && pnpm build   # 143 tests, all packages
+pnpm typecheck && pnpm test && pnpm build   # 145 tests, all packages
 cp .env.example .env                        # everything blank is a valid state
 ln -s ../../.env apps/web/.env              # Next.js only reads env from apps/web (a symlink is fine)
 pnpm --filter @socialmonitor/pipeline dev   # worker starts, reports "idle (unconfigured)"

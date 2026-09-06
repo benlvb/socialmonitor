@@ -10,7 +10,7 @@ dashboard / `/ask` chat / weekly summaries (Sonnet) / Telegram alerts. Single-op
 self-hosted, MIT. **`SPEC.md` is the source of truth** (24 confirmed decisions,
 D1–D24); read it before designing anything. `docs/runbook/engineer.md` holds the working
 invariants; `PROGRESS.md` is the checkpoint log. Status: complete and audited (three
-review passes, 143 tests) but **never run against live traffic** — every adapter was
+review passes, 145 tests) but **never run against live traffic** — every adapter was
 verified on recorded fixtures only.
 
 ## Commands
