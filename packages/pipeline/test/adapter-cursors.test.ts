@@ -720,7 +720,11 @@ describe("App Store cursor semantics", () => {
         link: ["alternate", "self", "first", "last", "previous", "next"].map((rel) => ({ attributes: { rel, href: "" } })),
       },
     };
-    const s = stubFetch([{ match: /page=1\/json/, response: { body: unserved } }]);
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: unserved } },
+      // The app is real, just absent here: the unscoped lookup still finds it.
+      { match: /lookup\?id=\d+$/, response: { body: { resultCount: 1 } } },
+    ]);
     restore = s.restore;
     const sql = fakeSql();
     const r = await appstoreAdapter.fetch({
@@ -729,7 +733,57 @@ describe("App Store cursor semantics", () => {
     expect(r.items).toEqual([]);
     expect(r.nextCursor).toBeNull();
     expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0); // not a daily warning per dead storefront
-    expect(s.urls).toHaveLength(1);
+    // Recorded rather than silent, but at info: a configured storefront Apple
+    // does not serve is a settled state, not something to page on.
+    const dead = eventsOfKind(sql, "target_unavailable");
+    expect(dead).toHaveLength(1);
+    expect(dead[0]!.values).toContain("info");
+    expect(s.urls).toHaveLength(2); // feed page 1, then the unscoped lookup
+  });
+
+  it("a nonexistent app id is an ERROR, not a silent hold: lookup finds it in no storefront", async () => {
+    // Apple answers 200 with zero entries for a bad id exactly as it does for an
+    // unserved storefront, so the feed alone cannot separate them and the stream
+    // used to hold forever saying nothing. The lookup endpoint separates them.
+    const empty = {
+      feed: { link: ["self", "first", "last"].map((rel) => ({ attributes: { rel, href: "" } })) },
+    };
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: empty } },
+      { match: /lookup\?id=\d+$/, response: { body: { resultCount: 0 } } },
+      { match: /lookup\?id=\d+&country=us/, response: { body: { resultCount: 0 } } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toEqual([]);
+    expect(r.nextCursor).toBeNull(); // still holds — never advance over an unknown
+    const bad = eventsOfKind(sql, "target_unavailable");
+    expect(bad).toHaveLength(1);
+    expect(bad[0]!.values).toContain("error");
+    expect(String(bad[0]!.values.find((v) => typeof v === "string" && /lookup/.test(v)))).toContain("310633997");
+    expect(s.urls).toHaveLength(3); // feed, unscoped lookup, storefront lookup
+  });
+
+  it("an empty page 1 whose lookup is unreachable records the ambiguity instead of going quiet", async () => {
+    const empty = { feed: { link: [{ attributes: { rel: "last", href: "" } }] } };
+    // The lookup is deliberately unstubbed — stubFetch throws, which is the
+    // network-failure path.
+    const s = stubFetch([{ match: /page=1\/json/, response: { body: empty } }]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    const unknown = eventsOfKind(sql, "target_unavailable");
+    expect(unknown).toHaveLength(1);
+    expect(unknown[0]!.values).toContain("info");
+    expect(
+      String(unknown[0]!.values.find((v) => typeof v === "string" && /could not be reached/.test(v))),
+    ).toContain("unconfirmed");
   });
 
   it("a page 10 with MORE than 50 entries still counts as the cap (>= guard)", async () => {

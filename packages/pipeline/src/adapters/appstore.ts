@@ -43,6 +43,15 @@ import { fixtureMode, loadFixture } from "./fixtures";
  * `limits.max_pages_per_fetch` knob (built for metered APIs) does not apply; a
  * smaller cap could never converge on a busy app's backfill.
  *
+ * An empty page 1 with no usable `last` is the one shape the feed cannot explain
+ * on its own: a storefront Apple does not serve and an app id that does not
+ * exist look identical. Apple's `lookup` endpoint separates them (a real id
+ * returns 1 unscoped, 0 for a storefront lacking it; a bad id returns 0 either
+ * way), so the walk resolves it after the fact and records a
+ * `target_unavailable` event — error for a wrong id, info for a dead
+ * storefront. It never throws: a SystemicError here would trip the per-source
+ * breaker and take healthy targets down with the bad one.
+ *
  * Edited reviews resurface with a new `updated` but the same id. The PK on
  * raw_items includes posted_at, so a second row would double the item count
  * that ranks the dedup shortlist; ids already stored on this stream are
@@ -188,6 +197,29 @@ async function fetchPage(
   return { status: res.status, feed: (await res.json()) as RssFeed };
 }
 
+/**
+ * How many results Apple's lookup endpoint returns for an app id, or null when
+ * the lookup itself could not be reached.
+ *
+ * The reviews feed answers 200 with zero entries for BOTH a storefront that does
+ * not carry the app and an app id that does not exist, so an empty page 1 alone
+ * cannot tell an operator typo from a regional gap. Lookup separates them
+ * (probed): a real id returns 1 unscoped and 0 for a storefront that lacks it,
+ * while a nonexistent id returns 0 either way.
+ */
+async function lookupCount(appId: string, cc?: string): Promise<number | null> {
+  const url =
+    `${RSS_HOST}/lookup?id=${encodeURIComponent(appId)}` + (cc ? `&country=${encodeURIComponent(cc)}` : "");
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { resultCount?: number };
+    return typeof body.resultCount === "number" ? body.resultCount : null;
+  } catch {
+    return null;
+  }
+}
+
 function newestIso(items: RawItem[]): string | null {
   if (items.length === 0) return null;
   return new Date(Math.max(...items.map((i) => i.postedAt.getTime()))).toISOString();
@@ -252,6 +284,7 @@ export const appstoreAdapter: SourceAdapter = {
     let feedCapped = false;
     /** Set when a page came back empty/short below `last` or without links (review N1). */
     let anomalyPage: number | null = null;
+    let emptyFirstPage = false;
 
     for (let page = 1; page <= APPSTORE_FEED_PAGE_CAP; page++) {
       const { status, feed } = await fetchPage(cc, appId, page);
@@ -268,10 +301,13 @@ export const appstoreAdapter: SourceAdapter = {
       const lastPage = lastPageOf(feed);
       if (entries.length === 0 && lastPage !== null && page > lastPage) break; // past the end
       if (entries.length === 0) {
-        // A transient blank page, not the end. Page 1 with no links at all is
-        // also what an unserved storefront looks like — hold quietly; a later
-        // page, or a page 1 whose links claim more pages, is a gap worth saying.
+        // A transient blank page, not the end. A later page, or a page 1 whose
+        // links claim more pages, is a mid-feed gap. A bare empty page 1 is the
+        // ambiguous shape — an unserved storefront OR a nonexistent app id —
+        // and used to break here silently, so a typo'd target looked exactly
+        // like a healthy stream forever. Resolved after the walk via lookup.
         if (page > 1 || (lastPage !== null && lastPage > 1)) anomalyPage = page;
+        else emptyFirstPage = true;
         break;
       }
       let reachedCursor = false;
@@ -327,6 +363,38 @@ export const appstoreAdapter: SourceAdapter = {
           and stream = ${stream.stream} and external_id = any(${ids}::text[])`;
       const seen = new Set(rows.map((r) => r.external_id as string));
       if (seen.size > 0) items = newer.filter((i) => !seen.has(i.externalId));
+    }
+
+    // An empty page 1 with no usable links. The stream produces nothing either
+    // way, so it must not stay silent — but the two causes need different
+    // urgency, and the lookup endpoint separates them. Gated behind the
+    // debounce so a permanently-unserved storefront costs one lookup per day,
+    // not one per tick. Never throws: a SystemicError here would trip the
+    // per-source breaker and take healthy targets down with the bad one.
+    if (emptyFirstPage) {
+      if (!(await hasEventToday(sql, monitor.id, "target_unavailable", stream.stream))) {
+        const anywhere = await lookupCount(appId);
+        const here = anywhere === 0 ? await lookupCount(appId, cc) : null;
+        const missing = anywhere === 0 && here === 0;
+        await logEvent(sql, {
+          monitorId: monitor.id,
+          source: "appstore",
+          stream: stream.stream,
+          // Only a wrong id is worth paging for. A storefront the operator
+          // configured that Apple does not serve is a settled state, not a
+          // daily warning — info records it and arms the debounce so the
+          // lookup costs one call a day rather than one per tick.
+          level: missing ? "error" : "info",
+          kind: "target_unavailable",
+          message: missing
+            ? `app id ${appId} returns no result from Apple's lookup in any storefront — the target value is wrong and this stream will never produce items`
+            : anywhere === null
+              ? `storefront ${cc} returned an empty feed for app ${appId} and Apple's lookup could not be reached, so the cause is unconfirmed; cursor held`
+              : `app ${appId} is not served in storefront ${cc} (it exists elsewhere) — drop this storefront or the stream stays empty`,
+          meta: { app_id: appId, storefront: cc, lookup_anywhere: anywhere, lookup_storefront: here },
+        });
+      }
+      return { items, nextCursor: null, ...(dropped > 0 ? { droppedCount: dropped } : {}) };
     }
 
     if (anomalyPage !== null) {
