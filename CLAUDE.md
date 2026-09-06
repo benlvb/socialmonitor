@@ -5,12 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 `socialmonitor` — configurable multi-source social monitoring: X, Reddit, YouTube,
-Telegram, Discord, App Store reviews (credential-less), Google Play reviews (own apps) → LLM classification (Haiku, Batch API) → deduped **themes** →
+Telegram, Discord, App Store reviews (credential-less), Google Play reviews (own apps via the
+official API, any app via the public-page scraper) → LLM classification (Haiku, Batch API) → deduped **themes** →
 dashboard / `/ask` chat / weekly summaries (Sonnet) / Telegram alerts. Single-operator,
-self-hosted, MIT. **`SPEC.md` is the source of truth** (24 confirmed decisions,
-D1–D24); read it before designing anything. `docs/runbook/engineer.md` holds the working
+self-hosted, MIT. **`SPEC.md` is the source of truth** (25 confirmed decisions,
+D1–D25); read it before designing anything. `docs/runbook/engineer.md` holds the working
 invariants; `PROGRESS.md` is the checkpoint log. Status: complete and audited (three
-review passes, 141 tests) but **never run against live traffic** — every adapter was
+review passes, 161 tests) but **never run against live traffic** — every adapter was
 verified on recorded fixtures only.
 
 ## Commands

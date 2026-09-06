@@ -59,7 +59,7 @@ export const TARGET_KINDS: Record<Source, readonly string[]> = {
   telegram: ["channel"],
   discord: ["guild"],
   appstore: ["app"],
-  playstore: ["app"],
+  playstore: ["app", "app_public"],
 };
 
 /** Display labels for sources (UI). */

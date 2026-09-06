@@ -19,13 +19,14 @@
     "@anthropic-ai/sdk": "latest",
     "@socialmonitor/db": "workspace:*",
     "@socialmonitor/shared": "workspace:*",
+    "google-play-scraper": "10.1.3",
     "telegram": "latest",
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
-    "vitest": "^3.0.0",
-    "@types/node": "^22.0.0"
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
   }
 }
