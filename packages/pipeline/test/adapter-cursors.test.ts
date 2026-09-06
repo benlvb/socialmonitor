@@ -720,7 +720,12 @@ describe("App Store cursor semantics", () => {
         link: ["alternate", "self", "first", "last", "previous", "next"].map((rel) => ({ attributes: { rel, href: "" } })),
       },
     };
-    const s = stubFetch([{ match: /page=1\/json/, response: { body: unserved } }]);
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: unserved } },
+      { match: /lookup\?id=\d+&country=li/, response: { body: { resultCount: 0 } } },
+      // The app is real, just absent here: a storefront this monitor reads has it.
+      { match: /lookup\?id=\d+&country=us/, response: { body: { resultCount: 1 } } },
+    ]);
     restore = s.restore;
     const sql = fakeSql();
     const r = await appstoreAdapter.fetch({
@@ -729,7 +734,162 @@ describe("App Store cursor semantics", () => {
     expect(r.items).toEqual([]);
     expect(r.nextCursor).toBeNull();
     expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0); // not a daily warning per dead storefront
-    expect(s.urls).toHaveLength(1);
+    // Recorded rather than silent, but at info: a configured storefront Apple
+    // does not serve is a settled state, not something to page on.
+    const dead = eventsOfKind(sql, "target_unavailable");
+    expect(dead).toHaveLength(1);
+    expect(dead[0]!.values).toContain("info");
+    expect(s.urls).toHaveLength(3); // feed, lookup(li), lookup(us)
+  });
+
+  it("an app Apple sells only OUTSIDE this storefront is info, never a false 'wrong id' error", async () => {
+    // The regression that shipped in the first cut of this fix: an UNSCOPED
+    // lookup is the `us` storefront under another name (93 of 310 real apps
+    // answer 0 unscoped), so treating an unscoped 0 as "no such id" paged a
+    // daily error on, say, a China-only app with a million live reviews. The
+    // id question may only be answered by sweeping the configured storefronts.
+    const empty = {
+      feed: { link: ["self", "first", "last"].map((rel) => ({ attributes: { rel, href: "" } })) },
+    };
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: empty } },
+      { match: /lookup\?id=\d+&country=us/, response: { body: { resultCount: 0 } } },
+      { match: /lookup\?id=\d+&country=cn/, response: { body: { resultCount: 1 } } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db,
+      monitor: monitorWith({ limits: { appstore_storefronts: ["us", "cn"] } }),
+      stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    const ev = eventsOfKind(sql, "target_unavailable");
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.values).toContain("info"); // NOT error — the id is fine
+    expect(ev[0]!.values).not.toContain("error");
+    expect(String(ev[0]!.values.find((v) => typeof v === "string" && /storefront/.test(v)))).toContain("cn");
+  });
+
+  it("a nonexistent app id is an ERROR: it resolves in none of the monitor's storefronts", async () => {
+    // Apple answers 200 with zero entries for a bad id exactly as it does for an
+    // unserved storefront, so the feed alone cannot separate them and the stream
+    // used to hold forever saying nothing. Only a per-storefront sweep can.
+    const empty = {
+      feed: { link: ["self", "first", "last"].map((rel) => ({ attributes: { rel, href: "" } })) },
+    };
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: empty } },
+      { match: /lookup\?id=\d+&country=us/, response: { body: { resultCount: 0 } } },
+      { match: /lookup\?id=\d+&country=cn/, response: { body: { resultCount: 0 } } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db,
+      monitor: monitorWith({ limits: { appstore_storefronts: ["us", "cn"] } }),
+      stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.items).toEqual([]);
+    expect(r.nextCursor).toBeNull(); // still holds — never advance over an unknown
+    const bad = eventsOfKind(sql, "target_unavailable");
+    expect(bad).toHaveLength(1);
+    expect(bad[0]!.values).toContain("error");
+    expect(String(bad[0]!.values.find((v) => typeof v === "string" && /resolves in none/.test(v)))).toContain("310633997");
+    expect(s.urls).toHaveLength(3); // feed, lookup(us), lookup(cn)
+  });
+
+  it("a DEFAULT monitor (storefronts ['us']) never pages: with nothing to sweep, the id is unproven", async () => {
+    // The regression the second review caught. appstore_storefronts defaults to
+    // ["us"], so on a default monitor the sweep's only entry IS cc, `continue`
+    // fires, and zero lookups run — measuring nothing about the id. Escalating
+    // there pages a valid China-only app on no evidence, which is the same
+    // shape as the bug this whole change exists to remove. Every earlier test
+    // configured TWO storefronts and so never visited this cell.
+    const empty = {
+      feed: { link: ["self", "first", "last"].map((rel) => ({ attributes: { rel, href: "" } })) },
+    };
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: empty } },
+      { match: /lookup\?id=\d+&country=us/, response: { body: { resultCount: 0 } } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    const ev = eventsOfKind(sql, "target_unavailable");
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.values).toContain("info");
+    expect(ev[0]!.values).not.toContain("error"); // nothing was measured about the id
+    expect(s.urls).toHaveLength(2); // feed + lookup(us); the sweep made no calls
+  });
+
+  it("a sweep that could not reach Apple does not manufacture a 'wrong id' error", async () => {
+    // `null` from lookupCount means unreachable, not "not served". Reading the
+    // two as the same turns an Apple outage into a page against a valid target.
+    const empty = {
+      feed: { link: ["self", "first", "last"].map((rel) => ({ attributes: { rel, href: "" } })) },
+    };
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: empty } },
+      { match: /lookup\?id=\d+&country=us/, response: { body: { resultCount: 0 } } },
+      { match: /lookup\?id=\d+&country=cn/, response: { status: 503, body: {} } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db,
+      monitor: monitorWith({ limits: { appstore_storefronts: ["us", "cn"] } }),
+      stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    const ev = eventsOfKind(sql, "target_unavailable");
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.values).toContain("info");
+    expect(ev[0]!.values).not.toContain("error");
+    expect(String(ev[0]!.values.find((v) => typeof v === "string" && /unconfirmed/.test(v)))).toContain("could not be reached");
+  });
+
+  it("an app served here with no reviews yet is info, and says so accurately", async () => {
+    const empty = {
+      feed: { link: ["self", "first", "last"].map((rel) => ({ attributes: { rel, href: "" } })) },
+    };
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: empty } },
+      { match: /lookup\?id=\d+&country=us/, response: { body: { resultCount: 1 } } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    const ev = eventsOfKind(sql, "target_unavailable");
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.values).toContain("info");
+    expect(String(ev[0]!.values.find((v) => typeof v === "string" && /no reviews/.test(v)))).toContain("us");
+    expect(s.urls).toHaveLength(2); // no sweep needed — this storefront has it
+  });
+
+  it("an empty page 1 whose lookup is unreachable records the ambiguity instead of going quiet", async () => {
+    const empty = { feed: { link: [{ attributes: { rel: "last", href: "" } }] } };
+    // The lookup is deliberately unstubbed — stubFetch throws, which is the
+    // network-failure path.
+    const s = stubFetch([{ match: /page=1\/json/, response: { body: empty } }]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    const unknown = eventsOfKind(sql, "target_unavailable");
+    expect(unknown).toHaveLength(1);
+    expect(unknown[0]!.values).toContain("info");
+    expect(
+      String(unknown[0]!.values.find((v) => typeof v === "string" && /could not be reached/.test(v))),
+    ).toContain("unconfirmed");
   });
 
   it("a page 10 with MORE than 50 entries still counts as the cap (>= guard)", async () => {
