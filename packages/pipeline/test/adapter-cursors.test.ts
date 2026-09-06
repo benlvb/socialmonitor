@@ -799,6 +799,59 @@ describe("App Store cursor semantics", () => {
     expect(s.urls).toHaveLength(3); // feed, lookup(us), lookup(cn)
   });
 
+  it("a DEFAULT monitor (storefronts ['us']) never pages: with nothing to sweep, the id is unproven", async () => {
+    // The regression the second review caught. appstore_storefronts defaults to
+    // ["us"], so on a default monitor the sweep's only entry IS cc, `continue`
+    // fires, and zero lookups run — measuring nothing about the id. Escalating
+    // there pages a valid China-only app on no evidence, which is the same
+    // shape as the bug this whole change exists to remove. Every earlier test
+    // configured TWO storefronts and so never visited this cell.
+    const empty = {
+      feed: { link: ["self", "first", "last"].map((rel) => ({ attributes: { rel, href: "" } })) },
+    };
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: empty } },
+      { match: /lookup\?id=\d+&country=us/, response: { body: { resultCount: 0 } } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    const ev = eventsOfKind(sql, "target_unavailable");
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.values).toContain("info");
+    expect(ev[0]!.values).not.toContain("error"); // nothing was measured about the id
+    expect(s.urls).toHaveLength(2); // feed + lookup(us); the sweep made no calls
+  });
+
+  it("a sweep that could not reach Apple does not manufacture a 'wrong id' error", async () => {
+    // `null` from lookupCount means unreachable, not "not served". Reading the
+    // two as the same turns an Apple outage into a page against a valid target.
+    const empty = {
+      feed: { link: ["self", "first", "last"].map((rel) => ({ attributes: { rel, href: "" } })) },
+    };
+    const s = stubFetch([
+      { match: /page=1\/json/, response: { body: empty } },
+      { match: /lookup\?id=\d+&country=us/, response: { body: { resultCount: 0 } } },
+      { match: /lookup\?id=\d+&country=cn/, response: { status: 503, body: {} } },
+    ]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db,
+      monitor: monitorWith({ limits: { appstore_storefronts: ["us", "cn"] } }),
+      stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull();
+    const ev = eventsOfKind(sql, "target_unavailable");
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.values).toContain("info");
+    expect(ev[0]!.values).not.toContain("error");
+    expect(String(ev[0]!.values.find((v) => typeof v === "string" && /unconfirmed/.test(v)))).toContain("could not be reached");
+  });
+
   it("an app served here with no reviews yet is info, and says so accurately", async () => {
     const empty = {
       feed: { link: ["self", "first", "last"].map((rel) => ({ attributes: { rel, href: "" } })) },
