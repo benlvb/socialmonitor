@@ -907,12 +907,14 @@ describe("Google Play cursor semantics", () => {
     expect(s.urls).toEqual([]);
   });
 
-  it("no service account is a state, not an error: status unconfigured, fetch skips silently", async () => {
+  it("no service account is a state, not an error: status stays configured (the public transport needs none), own-app fetch skips silently", async () => {
     vi.stubEnv("GOOGLE_SERVICE_ACCOUNT_JSON", "");
     const s = stubFetch([]);
     restore = s.restore;
     const sql = fakeSql();
-    expect((await playstoreAdapter.status(sql.db, "owner")).configured).toBe(false);
+    const status = await playstoreAdapter.status(sql.db, "owner");
+    expect(status.configured).toBe(true);
+    expect(status.detail).toMatch(/GOOGLE_SERVICE_ACCOUNT_JSON not configured/);
     const r = await playstoreAdapter.fetch({ sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {} });
     expect(r).toEqual({ items: [], nextCursor: null });
     expect(s.urls).toEqual([]);

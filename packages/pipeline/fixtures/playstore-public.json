@@ -1,0 +1,58 @@
+[
+  {
+    "id": "89e914ed-746e-4c9c-89e3-6737a1f85e1d",
+    "userName": "Aisyah R",
+    "date": "2026-08-22T09:15:00.658Z",
+    "score": 2,
+    "scoreText": "2",
+    "url": "https://play.google.com/store/apps/details?id=com.example.app&reviewId=89e914ed-746e-4c9c-89e3-6737a1f85e1d",
+    "title": null,
+    "text": "Since the 4.2 update the acme widget app takes ages to open and the home screen widget shows yesterday's numbers. Was fine before, please fix.",
+    "replyDate": "2026-08-23T01:00:00.000Z",
+    "replyText": "Sorry about that — 4.2.1 rolling out this week fixes the stale widget.",
+    "version": "4.2.0",
+    "thumbsUp": 14
+  },
+  {
+    "id": "5d0d1b2a-2f6a-4a71-9d7e-0f3c1a2b3c4d",
+    "userName": "Marcus T",
+    "date": "2026-08-21T18:40:12.111Z",
+    "score": 5,
+    "scoreText": "5",
+    "url": "https://play.google.com/store/apps/details?id=com.example.app&reviewId=5d0d1b2a-2f6a-4a71-9d7e-0f3c1a2b3c4d",
+    "title": null,
+    "text": "Best dashboard app I have tried. Sharing a board with my team is one tap and it looks right on a phone.",
+    "replyDate": null,
+    "replyText": null,
+    "version": "4.1.3",
+    "thumbsUp": 3
+  },
+  {
+    "id": "b7c8d9e0-1111-4222-8333-944455556666",
+    "userName": "Priya N",
+    "date": "2026-08-21T07:02:45.000Z",
+    "score": 3,
+    "scoreText": "3",
+    "url": "https://play.google.com/store/apps/details?id=com.example.app&reviewId=b7c8d9e0-1111-4222-8333-944455556666",
+    "title": "Needs CSV export",
+    "text": "Needs CSV export. PDF-only is useless for our finance team, otherwise solid.",
+    "replyDate": null,
+    "replyText": null,
+    "version": "4.1.3",
+    "thumbsUp": 1
+  },
+  {
+    "id": "0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+    "userName": "Ken",
+    "date": "2026-08-20T22:11:09.000Z",
+    "score": 1,
+    "scoreText": "1",
+    "url": "https://play.google.com/store/apps/details?id=com.example.app&reviewId=0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+    "title": null,
+    "text": "👎",
+    "replyDate": null,
+    "replyText": null,
+    "version": "4.2.0",
+    "thumbsUp": 0
+  }
+]

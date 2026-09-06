@@ -1,3 +1,4 @@
+/// <reference path="../types/google-play-scraper.d.ts" />
 import { createSign } from "node:crypto";
 import {
   SystemicError,
@@ -44,6 +45,18 @@ import { fixtureMode, loadFixture } from "./fixtures";
  * Edited reviews resurface with a new `lastModified` and the same reviewId; ids
  * already stored on this stream are dropped, first-seen text kept (the raw_items
  * PK includes posted_at, so a second row would double the theme item count).
+ *
+ * SECOND TRANSPORT (D25): `app_public` targets read ANY app's reviews from the
+ * public store pages through `google-play-scraper` (unofficial, no credential —
+ * the x_scraper posture). Probed 2026-09-06 (Money Manager, 10M+ installs): 100
+ * reviews per page newest-first by `date` (ISO, ms precision), opaque
+ * `nextPaginationToken`, `lang` filters the set and `country` does not (so the
+ * dimension is language: `limits.playstore_langs`, streams `public/<lang>/<uuid>`).
+ * An unknown app AND a stale token both come back as an empty page with no token,
+ * so `app()` (which throws 404 for unknown packages) disambiguates on the first
+ * sync and on an empty first page, and an empty resumed page restarts the walk
+ * from page 1 instead of ending it. The library is imported lazily so a worker
+ * with no public targets never loads it.
  */
 
 const API = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications";
@@ -282,7 +295,9 @@ export const playstoreAdapter: SourceAdapter = {
   async status(sql, ownerId) {
     if (fixtureMode()) return { configured: true, detail: "fixture mode" };
     const creds = await resolveCredentials(sql, ownerId, "google_play");
-    if (!creds) return { configured: false, detail: "GOOGLE_SERVICE_ACCOUNT_JSON not configured" };
+    // The public transport (app_public targets) needs no credential, so the source
+    // is always configured; own-app (`app`) streams skip silently without a key.
+    if (!creds) return { configured: true, detail: "public-app targets only — GOOGLE_SERVICE_ACCOUNT_JSON not configured for own-app targets" };
     // A present-but-broken key is configured (so fetch runs and trips the breaker
     // visibly) rather than silently unconfigured.
     return parseServiceAccount(creds.GOOGLE_SERVICE_ACCOUNT_JSON)
@@ -306,12 +321,22 @@ export const playstoreAdapter: SourceAdapter = {
     }
   },
 
-  streams(_monitor: MonitorRow, targets: TargetRow[]): StreamDef[] {
-    return targets.filter((t) => t.kind === "app").map((t) => ({ stream: `reviews/${t.id}`, target: t }));
+  streams(monitor: MonitorRow, targets: TargetRow[]): StreamDef[] {
+    const out: StreamDef[] = [];
+    for (const t of targets) {
+      if (t.kind === "app") out.push({ stream: `reviews/${t.id}`, target: t });
+      if (t.kind === "app_public") {
+        for (const lang of monitor.config.limits.playstore_langs) {
+          out.push({ stream: `public/${lang}/${t.id}`, target: t });
+        }
+      }
+    }
+    return out;
   },
 
   async fetch(ctx: FetchContext): Promise<FetchResult> {
     const { sql, monitor, stream, cursor } = ctx;
+    if (stream.stream.startsWith("public/")) return fetchPublic(ctx);
     if (fixtureMode()) {
       if (cursor) return { items: [], nextCursor: null };
       const reviews = await loadFixture<PlayReview[]>("playstore");
@@ -440,3 +465,237 @@ export const playstoreAdapter: SourceAdapter = {
     };
   },
 };
+
+// ── Public transport (D25): any app, no credential, via google-play-scraper ──
+
+import type { Gplay, GplayReview } from "google-play-scraper";
+
+const PUBLIC_PAGE_SIZE = 100;
+/** Requests per second against the public store pages — be a polite scraper. */
+const PUBLIC_THROTTLE = 2;
+
+let scraperPromise: Promise<Gplay> | null = null;
+/** Lazy: a worker with no app_public targets never loads the library. */
+function loadScraper(): Promise<Gplay> {
+  scraperPromise ??= import("google-play-scraper").then((m) => m.default);
+  return scraperPromise;
+}
+/** Tests only: inject a scripted library. */
+export function setPlayScraperForTests(impl: Gplay | null): void {
+  scraperPromise = impl ? Promise.resolve(impl) : null;
+}
+
+/** The library throws plain Errors with a `status` for HTTP failures. */
+function classifyScraperError(err: unknown, what: string): Error {
+  const status = Number((err as { status?: unknown })?.status);
+  const msg = String((err as Error)?.message ?? err);
+  if (status === 404 || /not found/i.test(msg)) return new SystemicError(`playstore public: ${what}: ${msg}`);
+  if (status === 401 || status === 403) return new SystemicError(`playstore public: ${what}: ${msg}`);
+  return new TransientError(`playstore public: ${what}: ${msg}`);
+}
+
+export function parsePublicReview(monitorId: string, stream: string, lang: string, pkg: string, r: GplayReview): RawItem | null {
+  const id = (r.id ?? "").trim();
+  if (!id || !r.date) return null;
+  const postedAt = new Date(r.date);
+  if (Number.isNaN(postedAt.getTime())) return null;
+  const title = (r.title ?? "").trim();
+  const body = (r.text ?? "").trim();
+  // Play no longer shows titles (0 of 200 probed), but the field exists: collapse
+  // a title repeated inside the body the way the App Store adapter does.
+  const t = title.toLowerCase();
+  const b = body.toLowerCase();
+  const content = !title ? body : !body ? title : b.includes(t) ? body : t.includes(b) ? title : `${title}\n\n${body}`;
+  if (!content) return null;
+  const rating = Number(r.score);
+  const hasRating = Number.isInteger(rating) && rating >= 1 && rating <= 5;
+  const version = (r.version ?? "").trim();
+  const reply = (r.replyText ?? "").trim();
+  const thumbsUp = Number(r.thumbsUp ?? 0) || 0;
+  const author = (r.userName ?? "").trim();
+  return {
+    monitorId,
+    source: "playstore",
+    externalId: id,
+    stream,
+    url: r.url || `https://play.google.com/store/apps/details?id=${pkg}&reviewId=${encodeURIComponent(id)}`,
+    authorId: author || id,
+    authorHandle: author,
+    authorName: author,
+    authorFollowers: null,
+    content,
+    postedAt: clampFutureDate(postedAt),
+    parentExternalId: "",
+    context: {
+      channel_name: `Google Play (${lang})`,
+      ...(hasRating ? { rating } : {}),
+      ...(version ? { app_version: version } : {}),
+      ...(reply ? { developer_reply: reply } : {}),
+    },
+    metrics: {
+      rating: hasRating ? rating : null,
+      version,
+      language: lang,
+      thumbs_up: thumbsUp,
+      has_developer_reply: Boolean(reply),
+      reply_date: r.replyDate ?? null,
+      transport: "public",
+    },
+    impressions: null, // Google exposes no view counts (D15 — labeled proxy)
+    engagement: thumbsUp,
+  };
+}
+
+/** `public/<lang>/<target uuid>` -> language code. */
+function langOf(stream: string): string | null {
+  const parts = stream.split("/");
+  return parts[0] === "public" && parts[1] ? parts[1] : null;
+}
+
+async function fetchPublic(ctx: FetchContext): Promise<FetchResult> {
+  const { sql, monitor, stream, cursor } = ctx;
+  const lang = langOf(stream.stream);
+  if (fixtureMode()) {
+    if (cursor) return { items: [], nextCursor: null };
+    const reviews = await loadFixture<GplayReview[]>("playstore-public");
+    const items = reviews
+      .map((r) => parsePublicReview(monitor.id, stream.stream, lang ?? "en", "com.example.app", r))
+      .filter((i): i is RawItem => i !== null);
+    return { items, nextCursor: newestIso(items), droppedCount: reviews.length - items.length };
+  }
+
+  const pkg = parsePackageName(stream.target?.value ?? "");
+  if (!lang || !pkg) {
+    throw new SystemicError(`playstore public target is not a package name or Play URL: ${stream.target?.value ?? stream.stream}`);
+  }
+  const gplay = await loadScraper();
+
+  // Unknown packages come back as an EMPTY review list, not an error; only
+  // app() says 404. Check once, on the first sync, so a typo trips the breaker
+  // instead of holding forever on "nothing newer".
+  if (!cursor) {
+    try {
+      await gplay.app({ appId: pkg, lang, throttle: PUBLIC_THROTTLE });
+    } catch (err) {
+      throw classifyScraperError(err, `app lookup for ${pkg}`);
+    }
+    return { items: [], nextCursor: new Date().toISOString() };
+  }
+
+  const cursorMs = new Date(cursor).getTime();
+  const meta = ctx.cursorMeta as PendingMeta;
+  const maxPages = monitor.config.limits.max_pages_per_fetch;
+
+  const newer: RawItem[] = [];
+  let dropped = 0;
+  let pageToken: string | undefined = meta.pending_token || undefined;
+  let resuming = pageToken !== undefined;
+  let restarted = false;
+  let coveredToCursor = false;
+  let completed = false;
+
+  for (let page = 0; page < maxPages; page++) {
+    let result;
+    try {
+      result = await gplay.reviews({
+        appId: pkg,
+        lang,
+        sort: gplay.sort.NEWEST,
+        num: PUBLIC_PAGE_SIZE,
+        paginate: true,
+        ...(pageToken ? { nextPaginationToken: pageToken } : {}),
+        throttle: PUBLIC_THROTTLE,
+      });
+    } catch (err) {
+      throw classifyScraperError(err, `reviews for ${pkg}/${lang}`);
+    }
+    const data = result.data ?? [];
+    const next = result.nextPaginationToken || undefined;
+
+    if (resuming && data.length === 0 && !next) {
+      // A stale resume token is indistinguishable from the end of the list
+      // (probed: both are an empty page with no token). Restart from page 1;
+      // the pages before the token were stored by the run that saved it.
+      console.warn(`[playstore] ${stream.stream}: resumed page came back empty; restarting the walk from page 1`);
+      pageToken = undefined;
+      resuming = false;
+      restarted = true;
+      continue;
+    }
+    resuming = false;
+
+    if (page === 0 && !restarted && data.length === 0 && !next) {
+      // Empty first page: no reviews in this language, or the app is gone.
+      try {
+        await gplay.app({ appId: pkg, lang, throttle: PUBLIC_THROTTLE });
+      } catch (err) {
+        throw classifyScraperError(err, `app lookup for ${pkg}`);
+      }
+      completed = true;
+      break;
+    }
+
+    let reachedCursor = false;
+    for (const r of data) {
+      const item = parsePublicReview(monitor.id, stream.stream, lang, pkg, r);
+      if (!item) {
+        dropped++;
+        continue;
+      }
+      // Strictly older ends the walk; a review in the cursor's own millisecond
+      // is kept and the dedupe below decides.
+      if (item.postedAt.getTime() < cursorMs) {
+        reachedCursor = true;
+        continue;
+      }
+      newer.push(item);
+    }
+    if (reachedCursor) coveredToCursor = true;
+    if (reachedCursor || !next) {
+      completed = true;
+      pageToken = undefined;
+      break;
+    }
+    pageToken = next;
+  }
+  if (completed && restarted && !coveredToCursor) {
+    // The restart after an empty resumed page ended before the cursor: hold one
+    // more run so a transient blank gets a second look (the official path's rule).
+    completed = false;
+  }
+
+  let items = newer;
+  if (newer.length > 0) {
+    const ids = newer.map((i) => i.externalId);
+    const rows = await sql`
+      select external_id from raw_items
+      where monitor_id = ${monitor.id} and source = 'playstore'
+        and stream = ${stream.stream} and external_id = any(${ids}::text[])`;
+    const seen = new Set(rows.map((r) => r.external_id as string));
+    if (seen.size > 0) items = newer.filter((i) => !seen.has(i.externalId));
+  }
+
+  const newestSeen = newestIso(newer, meta.pending_newest);
+  const extra = dropped > 0 ? { droppedCount: dropped } : {};
+  if (completed) {
+    return { items, nextCursor: newestSeen, cursorMeta: { pending_token: null, pending_newest: null }, ...extra };
+  }
+  if (!(await hasEventToday(sql, monitor.id, "coverage_gap", stream.stream))) {
+    await logEvent(sql, {
+      monitorId: monitor.id,
+      source: "playstore",
+      stream: stream.stream,
+      level: "warn",
+      kind: "coverage_gap",
+      message: restarted && !pageToken
+        ? "the resumed page came back empty and the fresh walk ended before reaching the cursor; cursor held for one more run"
+        : `the run budget (limits.max_pages_per_fetch = ${maxPages}) ran out before the walk reached the cursor; cursor held, the walk resumes from the page token next run`,
+    });
+  }
+  return {
+    items,
+    nextCursor: null,
+    cursorMeta: { pending_token: pageToken ?? null, pending_newest: newestSeen },
+    ...extra,
+  };
+}
