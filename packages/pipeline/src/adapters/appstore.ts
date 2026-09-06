@@ -45,12 +45,16 @@ import { fixtureMode, loadFixture } from "./fixtures";
  *
  * An empty page 1 with no usable `last` is the one shape the feed cannot explain
  * on its own: a storefront Apple does not serve and an app id that does not
- * exist look identical. Apple's `lookup` endpoint separates them (a real id
- * returns 1 unscoped, 0 for a storefront lacking it; a bad id returns 0 either
- * way), so the walk resolves it after the fact and records a
- * `target_unavailable` event — error for a wrong id, info for a dead
- * storefront. It never throws: a SystemicError here would trip the per-source
- * breaker and take healthy targets down with the bad one.
+ * exist look identical. `lookup` resolves it after the walk, but ONLY when
+ * asked per storefront — an unscoped lookup is the US storefront under another
+ * name (measured 2026-09-06: 93 of 310 real apps answer 0 unscoped, and 14/14
+ * spot-checked answered 0 unscoped / 0 for `us` / 1 for their home store), so
+ * an unscoped 0 is not evidence of a bad id. The walk asks `lookup(id, cc)`
+ * first and, only if that storefront lacks it, the monitor's other configured
+ * storefronts. `target_unavailable` is then error when the id resolves in NONE
+ * of them, info otherwise — served-here-but-no-reviews, served-elsewhere, or
+ * lookup unreachable. It never throws: a SystemicError here would trip the
+ * per-source breaker and take healthy targets down with the bad one.
  *
  * Edited reviews resurface with a new `updated` but the same id. The PK on
  * raw_items includes posted_at, so a second row would double the item count
@@ -203,9 +207,13 @@ async function fetchPage(
  *
  * The reviews feed answers 200 with zero entries for BOTH a storefront that does
  * not carry the app and an app id that does not exist, so an empty page 1 alone
- * cannot tell an operator typo from a regional gap. Lookup separates them
- * (probed): a real id returns 1 unscoped and 0 for a storefront that lacks it,
- * while a nonexistent id returns 0 either way.
+ * cannot tell an operator typo from a regional gap.
+ *
+ * ALWAYS pass `cc`. Omitting it does not mean "any storefront" — Apple defaults
+ * to `us`, so an unscoped 0 is returned for every app not sold in the United
+ * States (measured 2026-09-06: 93 of 310 real apps). Treating that as "no such
+ * id" pages a false error on a valid target; only a per-storefront sweep is
+ * evidence about the id itself.
  */
 async function lookupCount(appId: string, cc?: string): Promise<number | null> {
   const url =
@@ -373,9 +381,28 @@ export const appstoreAdapter: SourceAdapter = {
     // per-source breaker and take healthy targets down with the bad one.
     if (emptyFirstPage) {
       if (!(await hasEventToday(sql, monitor.id, "target_unavailable", stream.stream))) {
-        const anywhere = await lookupCount(appId);
-        const here = anywhere === 0 ? await lookupCount(appId, cc) : null;
-        const missing = anywhere === 0 && here === 0;
+        // Ask the storefront-scoped question FIRST. An unscoped lookup is the US
+        // storefront under another name — measured 2026-09-06, 93 of 310 real
+        // apps answer resultCount 0 unscoped — so an unscoped 0 says nothing
+        // about an app Apple sells only elsewhere, and treating it as "no such
+        // id" pages a daily false error on a perfectly good target.
+        const here = await lookupCount(appId, cc);
+        // Only when this storefront lacks it is the id itself in question, and
+        // the answer that matters is whether ANY storefront this monitor reads
+        // carries it. Stop at the first hit; the whole block runs once a day.
+        let servedIn: string | null = null;
+        if (here === 0) {
+          for (const other of monitor.config.limits.appstore_storefronts) {
+            if (other === cc) continue;
+            const n = await lookupCount(appId, other);
+            if (n !== null && n >= 1) {
+              servedIn = other;
+              break;
+            }
+          }
+        }
+        const configured = monitor.config.limits.appstore_storefronts.join(", ");
+        const missing = here === 0 && servedIn === null;
         await logEvent(sql, {
           monitorId: monitor.id,
           source: "appstore",
@@ -383,18 +410,27 @@ export const appstoreAdapter: SourceAdapter = {
           // Only a wrong id is worth paging for. A storefront the operator
           // configured that Apple does not serve is a settled state, not a
           // daily warning — info records it and arms the debounce so the
-          // lookup costs one call a day rather than one per tick.
+          // lookups cost one pass a day rather than one per tick.
           level: missing ? "error" : "info",
           kind: "target_unavailable",
+          // Each branch claims only what was measured.
           message: missing
-            ? `app id ${appId} returns no result from Apple's lookup in any storefront — the target value is wrong and this stream will never produce items`
-            : anywhere === null
+            ? `app id ${appId} resolves in none of this monitor's storefronts (${configured}) — the target value is likely wrong and this stream will never produce items`
+            : here === null
               ? `storefront ${cc} returned an empty feed for app ${appId} and Apple's lookup could not be reached, so the cause is unconfirmed; cursor held`
-              : `app ${appId} is not served in storefront ${cc} (it exists elsewhere) — drop this storefront or the stream stays empty`,
-          meta: { app_id: appId, storefront: cc, lookup_anywhere: anywhere, lookup_storefront: here },
+              : here >= 1
+                ? `app ${appId} is served in ${cc} but has no reviews there yet; cursor held`
+                : `app ${appId} is not served in storefront ${cc} (Apple serves it in ${servedIn}) — drop this storefront or the stream stays empty`,
+          meta: {
+            app_id: appId,
+            storefront: cc,
+            lookup_storefront: here,
+            served_in: servedIn,
+            storefronts_checked: monitor.config.limits.appstore_storefronts,
+          },
         });
       }
-      return { items, nextCursor: null, ...(dropped > 0 ? { droppedCount: dropped } : {}) };
+      return { items, nextCursor: null };
     }
 
     if (anomalyPage !== null) {
