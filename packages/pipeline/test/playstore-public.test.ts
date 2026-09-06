@@ -238,10 +238,12 @@ describe("Google Play public transport — cursor semantics", () => {
   it("an empty first page while a remembered newest is pending HOLDS and keeps the memory (review #7 F2)", async () => {
     scripted([{ data: [], nextPaginationToken: null }]);
     const meta = { pending_token: null, pending_newest: iso(500) };
-    const r = await playstoreAdapter.fetch({ sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: meta });
+    const sql = fakeSql();
+    const r = await playstoreAdapter.fetch({ sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: meta });
     expect(r.items).toEqual([]);
     expect(r.nextCursor).toBeNull(); // the regression: advanced to pending_newest having fetched nothing
     expect(r.cursorMeta).toEqual(meta);
+    expect(gapEvents(sql)).toHaveLength(1); // a hold is never silent (review #7 round 2)
   });
 
   it("an edited review (id already stored on this stream) is dropped, but the cursor still moves past it", async () => {

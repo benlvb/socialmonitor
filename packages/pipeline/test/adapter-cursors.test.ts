@@ -1244,6 +1244,7 @@ describe("Google Play cursor semantics", () => {
     expect(r.items).toEqual([]);
     expect(r.nextCursor).toBeNull(); // the regression: advanced to pending_newest with nothing fetched
     expect(r.cursorMeta).toEqual(meta);
+    expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(1); // a hold is never silent
   });
 
   it("item shape: tab-joined title becomes a paragraph break, developer reply and rating ride in context, thumbs-up is engagement", async () => {

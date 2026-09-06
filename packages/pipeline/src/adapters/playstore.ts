@@ -424,10 +424,13 @@ export const playstoreAdapter: SourceAdapter = {
       completed = false;
     }
 
+    let blankWithMemory = false;
     if (completed && newer.length === 0 && !coveredToCursor && (meta.pending_newest || meta.pending_token)) {
       // Nothing observed this run while an earlier, unfinished walk left a remembered
       // newest: cashing it in would advance over pages no run fetched (review #7 F2).
-      return { items: [], nextCursor: null, cursorMeta: { ...meta }, ...(dropped > 0 ? { droppedCount: dropped } : {}) };
+      // Fall through to the hold path so the stall is not silent (review #7 round 2).
+      completed = false;
+      blankWithMemory = true;
     }
 
     // Drop ids already stored ON THIS STREAM (edits, the boundary review) — on the
@@ -460,9 +463,11 @@ export const playstoreAdapter: SourceAdapter = {
         stream: stream.stream,
         level: "warn",
         kind: "coverage_gap",
-        message: restarted && !pageToken
-          ? "Google rejected the remembered page token and the fresh walk ended before reaching the cursor; cursor held for one more run"
-          : `the run budget (limits.max_pages_per_fetch = ${maxPages}) ran out before the walk reached the cursor; cursor held, the walk resumes from Google's page token next run`,
+        message: blankWithMemory
+          ? "Google served nothing while an earlier walk's newest is still pending; cursor held and the memory kept until a page reaches the cursor"
+          : restarted && !pageToken
+            ? "Google rejected the remembered page token and the fresh walk ended before reaching the cursor; cursor held for one more run"
+            : `the run budget (limits.max_pages_per_fetch = ${maxPages}) ran out before the walk reached the cursor; cursor held, the walk resumes from Google's page token next run`,
       });
     }
     return {
@@ -694,11 +699,14 @@ async function fetchPublic(ctx: FetchContext): Promise<FetchResult> {
   }
 
   const extra = dropped > 0 ? { droppedCount: dropped } : {};
+  let blankWithMemory = false;
   if (completed && newer.length === 0 && !coveredToCursor && (meta.pending_newest || meta.pending_token)) {
     // Nothing observed this run (a blank page) while an earlier, unfinished walk
     // left a remembered newest: cashing it in would advance over pages no run
-    // fetched. Keep holding, keep the memory (review #7 F2).
-    return { items: [], nextCursor: null, cursorMeta: { ...meta }, ...extra };
+    // fetched. Keep holding, keep the memory (review #7 F2) — through the hold
+    // path below, so the stall emits its coverage_gap like every other hold.
+    completed = false;
+    blankWithMemory = true;
   }
 
   let items = newer;
@@ -723,7 +731,9 @@ async function fetchPublic(ctx: FetchContext): Promise<FetchResult> {
       stream: stream.stream,
       level: "warn",
       kind: "coverage_gap",
-      message: restarted && !pageToken
+      message: blankWithMemory
+        ? "the store served nothing while an earlier walk's newest is still pending; cursor held and the memory kept until a page reaches the cursor"
+        : restarted && !pageToken
         ? "the resumed page came back empty and the fresh walk ended before reaching the cursor; cursor held for one more run"
         : `the run budget (limits.max_pages_per_fetch = ${maxPages}) ran out before the walk reached the cursor; cursor held, the walk resumes from the page token next run`,
     });
