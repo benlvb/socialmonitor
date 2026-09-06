@@ -50,7 +50,13 @@ export function TargetsEditor({ initial }: { initial: TargetRowInput[] }) {
               <td>
                 <input
                   value={r.value}
-                  placeholder={r.kind === "keyword" ? "search phrase" : `${r.kind} name / id`}
+                  placeholder={
+                    r.kind === "keyword"
+                      ? "search phrase"
+                      : r.kind === "app" || r.kind === "app_public"
+                        ? "package name / App Store id, or the store URL"
+                        : `${r.kind} name / id`
+                  }
                   onChange={(e) => update(i, { value: e.target.value })}
                 />
               </td>

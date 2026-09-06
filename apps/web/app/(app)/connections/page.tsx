@@ -59,7 +59,7 @@ const CARDS = [
     integration: "google_play",
     title: "Google Play (own apps)",
     description:
-      "Service-account key JSON, invited in the Play Console with 'View app information'. Official API: your own apps only, reviews from the last ~7 days (D24).",
+      "Service-account key JSON, invited in the Play Console with 'View app information'. Official API: your own apps only, reviews from the last ~7 days (D24). `app_public` targets read any app from the public store pages and need no key (D25).",
     fields: [{ name: "GOOGLE_SERVICE_ACCOUNT_JSON", label: "Service account JSON (one line)", secret: true }],
     env: ["GOOGLE_SERVICE_ACCOUNT_JSON"],
   },

@@ -1,4 +1,3 @@
-/// <reference path="../types/google-play-scraper.d.ts" />
 import { createSign } from "node:crypto";
 import {
   SystemicError,
@@ -48,10 +47,13 @@ import { fixtureMode, loadFixture } from "./fixtures";
  *
  * SECOND TRANSPORT (D25): `app_public` targets read ANY app's reviews from the
  * public store pages through `google-play-scraper` (unofficial, no credential —
- * the x_scraper posture). Probed 2026-09-06 (Money Manager, 10M+ installs): 100
- * reviews per page newest-first by `date` (ISO, ms precision), opaque
- * `nextPaginationToken`, `lang` filters the set and `country` does not (so the
- * dimension is language: `limits.playstore_langs`, streams `public/<lang>/<uuid>`).
+ * the x_scraper posture). Probed 2026-09-06 (Money Manager, 10M+ installs): Google
+ * serves 150 reviews per request newest-first by `date` (ISO, ms precision) with an
+ * opaque `nextPaginationToken` for item 151; the library then SLICES client-side to
+ * `num` while still returning that token, so any `num` below the server page skips
+ * the remainder silently — the adapter asks for far more than a page (review #7
+ * F1). `lang` filters the set and `country` does not (so the dimension is language:
+ * `limits.playstore_langs`, streams `public/<lang>/<uuid>`).
  * An unknown app AND a stale token both come back as an empty page with no token,
  * so `app()` (which throws 404 for unknown packages) disambiguates on the first
  * sync and on an empty first page, and an empty resumed page restarts the walk
@@ -422,6 +424,12 @@ export const playstoreAdapter: SourceAdapter = {
       completed = false;
     }
 
+    if (completed && newer.length === 0 && !coveredToCursor && (meta.pending_newest || meta.pending_token)) {
+      // Nothing observed this run while an earlier, unfinished walk left a remembered
+      // newest: cashing it in would advance over pages no run fetched (review #7 F2).
+      return { items: [], nextCursor: null, cursorMeta: { ...meta }, ...(dropped > 0 ? { droppedCount: dropped } : {}) };
+    }
+
     // Drop ids already stored ON THIS STREAM (edits, the boundary review) — on the
     // hold path too, since that path re-walks and meets edits most.
     let items = newer;
@@ -468,20 +476,40 @@ export const playstoreAdapter: SourceAdapter = {
 
 // ── Public transport (D25): any app, no credential, via google-play-scraper ──
 
-import type { Gplay, GplayReview } from "google-play-scraper";
+import type { IFnAppOptions, IFnReviewsOptions, IReviewsItem, IReviewsResult } from "google-play-scraper";
 
-const PUBLIC_PAGE_SIZE = 100;
+/**
+ * `num` is a CLIENT-SIDE slice in google-play-scraper: every request asks Google
+ * for its fixed server page (150) and returns the token for the item after it,
+ * then `data` is cut to `num`. A value below the server page loses the rest of
+ * the page for good, so ask for far more than one; `paginate: true` still issues
+ * exactly one request per call.
+ */
+const PUBLIC_NUM = 1000;
 /** Requests per second against the public store pages — be a polite scraper. */
 const PUBLIC_THROTTLE = 2;
+/** got request options the library forwards (untyped in its d.ts). A stalled request
+ * would otherwise hold the stream lock and the poll batch forever. */
+const PUBLIC_REQUEST_OPTIONS = { timeout: { request: 30_000 } } as const;
 
-let scraperPromise: Promise<Gplay> | null = null;
+type WithRequestOptions<T> = T & { requestOptions?: { timeout?: { request?: number } } };
+/** The slice of the library the transport uses — injectable for tests. */
+export interface PlayScraper {
+  reviews(options: WithRequestOptions<IFnReviewsOptions>): Promise<IReviewsResult>;
+  app(options: WithRequestOptions<IFnAppOptions>): Promise<unknown>;
+  sort: { NEWEST: NonNullable<IFnReviewsOptions["sort"]> };
+}
+/** A review as the library returns it; fields the parser reads are tolerated missing or null. */
+export type PublicReview = Pick<IReviewsItem, "id" | "date"> & { [K in keyof Omit<IReviewsItem, "id" | "date">]?: IReviewsItem[K] | null };
+
+let scraperPromise: Promise<PlayScraper> | null = null;
 /** Lazy: a worker with no app_public targets never loads the library. */
-function loadScraper(): Promise<Gplay> {
-  scraperPromise ??= import("google-play-scraper").then((m) => m.default);
+function loadScraper(): Promise<PlayScraper> {
+  scraperPromise ??= import("google-play-scraper").then((m) => m.default as unknown as PlayScraper);
   return scraperPromise;
 }
 /** Tests only: inject a scripted library. */
-export function setPlayScraperForTests(impl: Gplay | null): void {
+export function setPlayScraperForTests(impl: PlayScraper | null): void {
   scraperPromise = impl ? Promise.resolve(impl) : null;
 }
 
@@ -494,7 +522,7 @@ function classifyScraperError(err: unknown, what: string): Error {
   return new TransientError(`playstore public: ${what}: ${msg}`);
 }
 
-export function parsePublicReview(monitorId: string, stream: string, lang: string, pkg: string, r: GplayReview): RawItem | null {
+export function parsePublicReview(monitorId: string, stream: string, lang: string, pkg: string, r: PublicReview): RawItem | null {
   const id = (r.id ?? "").trim();
   if (!id || !r.date) return null;
   const postedAt = new Date(r.date);
@@ -557,7 +585,7 @@ async function fetchPublic(ctx: FetchContext): Promise<FetchResult> {
   const lang = langOf(stream.stream);
   if (fixtureMode()) {
     if (cursor) return { items: [], nextCursor: null };
-    const reviews = await loadFixture<GplayReview[]>("playstore-public");
+    const reviews = await loadFixture<PublicReview[]>("playstore-public");
     const items = reviews
       .map((r) => parsePublicReview(monitor.id, stream.stream, lang ?? "en", "com.example.app", r))
       .filter((i): i is RawItem => i !== null);
@@ -575,7 +603,7 @@ async function fetchPublic(ctx: FetchContext): Promise<FetchResult> {
   // instead of holding forever on "nothing newer".
   if (!cursor) {
     try {
-      await gplay.app({ appId: pkg, lang, throttle: PUBLIC_THROTTLE });
+      await gplay.app({ appId: pkg, lang, throttle: PUBLIC_THROTTLE, requestOptions: PUBLIC_REQUEST_OPTIONS });
     } catch (err) {
       throw classifyScraperError(err, `app lookup for ${pkg}`);
     }
@@ -601,10 +629,11 @@ async function fetchPublic(ctx: FetchContext): Promise<FetchResult> {
         appId: pkg,
         lang,
         sort: gplay.sort.NEWEST,
-        num: PUBLIC_PAGE_SIZE,
+        num: PUBLIC_NUM,
         paginate: true,
         ...(pageToken ? { nextPaginationToken: pageToken } : {}),
         throttle: PUBLIC_THROTTLE,
+        requestOptions: PUBLIC_REQUEST_OPTIONS,
       });
     } catch (err) {
       throw classifyScraperError(err, `reviews for ${pkg}/${lang}`);
@@ -627,7 +656,7 @@ async function fetchPublic(ctx: FetchContext): Promise<FetchResult> {
     if (page === 0 && !restarted && data.length === 0 && !next) {
       // Empty first page: no reviews in this language, or the app is gone.
       try {
-        await gplay.app({ appId: pkg, lang, throttle: PUBLIC_THROTTLE });
+        await gplay.app({ appId: pkg, lang, throttle: PUBLIC_THROTTLE, requestOptions: PUBLIC_REQUEST_OPTIONS });
       } catch (err) {
         throw classifyScraperError(err, `app lookup for ${pkg}`);
       }
@@ -664,6 +693,14 @@ async function fetchPublic(ctx: FetchContext): Promise<FetchResult> {
     completed = false;
   }
 
+  const extra = dropped > 0 ? { droppedCount: dropped } : {};
+  if (completed && newer.length === 0 && !coveredToCursor && (meta.pending_newest || meta.pending_token)) {
+    // Nothing observed this run (a blank page) while an earlier, unfinished walk
+    // left a remembered newest: cashing it in would advance over pages no run
+    // fetched. Keep holding, keep the memory (review #7 F2).
+    return { items: [], nextCursor: null, cursorMeta: { ...meta }, ...extra };
+  }
+
   let items = newer;
   if (newer.length > 0) {
     const ids = newer.map((i) => i.externalId);
@@ -676,7 +713,6 @@ async function fetchPublic(ctx: FetchContext): Promise<FetchResult> {
   }
 
   const newestSeen = newestIso(newer, meta.pending_newest);
-  const extra = dropped > 0 ? { droppedCount: dropped } : {};
   if (completed) {
     return { items, nextCursor: newestSeen, cursorMeta: { pending_token: null, pending_newest: null }, ...extra };
   }

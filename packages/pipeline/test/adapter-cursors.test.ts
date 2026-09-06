@@ -1095,12 +1095,21 @@ describe("Google Play cursor semantics", () => {
     const gaps = eventsOfKind(sql, "coverage_gap");
     expect(gaps).toHaveLength(1);
     expect(String(gaps[0]!.values.find((v) => typeof v === "string" && /rejected the remembered page token/.test(v)))).toContain("held for one more run");
-    // next run: nothing to resume, Google still empty → covered as far as Google knows: advance to the remembered newest
+    // next run: nothing to resume, Google STILL empty → nothing observed, so the remembered
+    // newest must not become the cursor (review #7 F2: that advanced over pages no run
+    // fetched). Keep holding, keep the memory.
     const s2 = stubFetch([{ match: PAGE1, response: { body: {} } }]);
-    restore = () => { s2.restore(); s.restore(); };
     const r2 = await playstoreAdapter.fetch({ sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: r.cursorMeta ?? {} });
-    expect(r2.nextCursor).toBe(iso(cursorSecs + 300));
-    expect(r2.cursorMeta).toEqual({ pending_token: null, pending_newest: null });
+    expect(r2.nextCursor).toBeNull();
+    expect(r2.cursorMeta).toEqual({ pending_token: null, pending_newest: iso(cursorSecs + 300) });
+    // a later run where Google serves a page that reaches the cursor proves coverage:
+    // advance to the remembered newest and clear the memory
+    const s3 = stubFetch([{ match: PAGE1, response: { body: page([review("older", cursorSecs - 60)]) } }]);
+    restore = () => { s3.restore(); s2.restore(); s.restore(); };
+    const r3 = await playstoreAdapter.fetch({ sql: fakeSql().db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: r2.cursorMeta ?? {} });
+    expect(r3.items).toEqual([]);
+    expect(r3.nextCursor).toBe(iso(cursorSecs + 300));
+    expect(r3.cursorMeta).toEqual({ pending_token: null, pending_newest: null });
   });
 
   it("a 400 on a fresh walk (no resume token) is systemic", async () => {
@@ -1224,6 +1233,17 @@ describe("Google Play cursor semantics", () => {
     expect(parsePackageName(" com.acme.app ")).toBe("com.acme.app");
     expect(parsePackageName("com")).toBeNull();
     expect(parsePackageName("https://play.google.com/store/apps/details?id=1bad")).toBeNull();
+  });
+
+  it("an empty page with NO token while a remembered newest is pending HOLDS and keeps the memory (never cashes in an unfinished walk)", async () => {
+    const s = stubFetch([tokenStub, { match: PAGE1, response: { body: page([]) } }]);
+    restore = s.restore;
+    const sql = fakeSql();
+    const meta = { pending_token: null, pending_newest: iso(cursorSecs + 500) };
+    const r = await playstoreAdapter.fetch({ sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: meta });
+    expect(r.items).toEqual([]);
+    expect(r.nextCursor).toBeNull(); // the regression: advanced to pending_newest with nothing fetched
+    expect(r.cursorMeta).toEqual(meta);
   });
 
   it("item shape: tab-joined title becomes a paragraph break, developer reply and rating ride in context, thumbs-up is engagement", async () => {
