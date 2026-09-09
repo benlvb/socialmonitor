@@ -20,7 +20,7 @@ deploy, no code change.
 
 The system is **complete but not yet battle-tested against live traffic.** All
 six sources, the classifier, the dashboard, `/ask`, and weekly summaries are
-built; the suite is green (141 tests, including mutation-verified cursor tests);
+built; the suite is green (161 tests, including mutation-verified cursor tests);
 three review passes (one automated, two full-repo model audits) have been
 applied. What has *not* happened is a production run: the adapters were
 verified against recorded fixtures and each platform's documented behaviour,
@@ -65,7 +65,7 @@ There is no hosted version. You run your own.
 ```sh
 git clone https://github.com/benlvb/socialmonitor && cd socialmonitor
 pnpm install
-pnpm typecheck && pnpm test && pnpm build   # 141 tests, all packages
+pnpm typecheck && pnpm test && pnpm build   # 161 tests, all packages
 cp .env.example .env                        # everything blank is a valid state
 ln -s ../../.env apps/web/.env              # Next.js only reads env from apps/web (a symlink is fine)
 pnpm --filter @socialmonitor/pipeline dev   # worker starts, reports "idle (unconfigured)"
@@ -191,7 +191,7 @@ with [BRACKETED] placeholders to edit. Then on the settings page:
 | telegram | `channel` (public username) |
 | discord | `guild` (server id — bot must be in it) |
 | appstore | `app` (numeric App Store id, or the app's App Store URL) |
-| playstore | `app` (package name such as `com.acme.app`, or the Play Store URL carrying `?id=`) |
+| playstore | `app` (your own app via the official API — package name such as `com.acme.app`, or the Play Store URL carrying `?id=`); `app_public` (**any** app via the public store pages, no credential; languages per monitor in `limits.playstore_langs`, default `["en"]`) |
 
 **Configuration JSON** — the classifier's brain. Every field is runtime-editable; the
 pipeline picks changes up on its next tick. The editor shows the fully-defaulted config;

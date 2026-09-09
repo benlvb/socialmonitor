@@ -49,3 +49,12 @@ describe("appstore storefronts", () => {
     expect(validateMonitorConfig({ limits: { appstore_storefronts: [] } }).ok).toBe(false);
   });
 });
+
+describe("playstore languages", () => {
+  it("defaults to English and validates language codes", () => {
+    expect(parseMonitorConfig({}).limits.playstore_langs).toEqual(["en"]);
+    expect(parseMonitorConfig({ limits: { playstore_langs: ["en", "ms", "zh-TW"] } }).limits.playstore_langs).toEqual(["en", "ms", "zh-TW"]);
+    expect(validateMonitorConfig({ limits: { playstore_langs: ["english"] } }).ok).toBe(false);
+    expect(validateMonitorConfig({ limits: { playstore_langs: [] } }).ok).toBe(false);
+  });
+});

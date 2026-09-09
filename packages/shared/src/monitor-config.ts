@@ -63,6 +63,12 @@ export const MonitorConfigSchema = z.object({
         .min(1)
         .max(20)
         .default(["us"]),
+      /** Google Play review languages each `app_public` target is read in (D25). `country` is not a filter. */
+      playstore_langs: z
+        .array(z.string().regex(/^[a-z]{2}(?:-[A-Za-z]{2,4})?$/, "language code such as en, ms or zh-TW"))
+        .min(1)
+        .max(10)
+        .default(["en"]),
     })
     .prefault({}),
   prefilter: z

@@ -203,3 +203,21 @@ describe("playstore adapter (fixtures)", () => {
     expect((await playstoreAdapter.status(sql, monitor.owner_id)).configured).toBe(true);
   });
 });
+
+describe("playstore public transport (fixtures)", () => {
+  it("parses public-store reviews: reply + rating in context, thumbs-up as engagement, language tag, title collapsed", async () => {
+    const r = await playstoreAdapter.fetch({ sql, monitor, stream: { stream: "public/en/t1" }, cursor: null, cursorMeta: {} });
+    expect(r.items.length).toBe(4);
+    const stale = r.items.find((i) => i.externalId === "89e914ed-746e-4c9c-89e3-6737a1f85e1d")!;
+    expect(stale.content).toContain("home screen widget shows yesterday's numbers");
+    expect(stale.context.rating).toBe(2);
+    expect(stale.context.channel_name).toBe("Google Play (en)");
+    expect(String(stale.context.developer_reply)).toContain("4.2.1");
+    expect(stale.metrics.transport).toBe("public");
+    expect(stale.engagement).toBe(14);
+    expect(stale.postedAt.toISOString()).toBe("2026-08-22T09:15:00.658Z");
+    // title repeated at the start of the body is stored once
+    expect(r.items.find((i) => i.externalId === "b7c8d9e0-1111-4222-8333-944455556666")!.content.startsWith("Needs CSV export. PDF-only")).toBe(true);
+    expect(r.nextCursor).toBe("2026-08-22T09:15:00.658Z");
+  });
+});
