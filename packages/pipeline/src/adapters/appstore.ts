@@ -372,23 +372,27 @@ export const appstoreAdapter: SourceAdapter = {
       if (seen.size > 0) items = newer.filter((i) => !seen.has(i.externalId));
     }
 
-    // An empty page 1 with no usable links. The stream produces nothing either
-    // way, so it must not stay silent — but the two causes need different
-    // urgency, and the lookup endpoint separates them. Gated behind the
-    // debounce so a permanently-unserved storefront costs one lookup per day,
-    // not one per tick. Never throws: a SystemicError here would trip the
-    // per-source breaker and take healthy targets down with the bad one.
+    // An empty page 1 with no usable links: a wrong app id and a storefront
+    // Apple does not serve look identical here, and BOTH produce nothing, so
+    // the one thing this must not do is stay silent (the bug this branch
+    // exists for — a typo'd target read as healthy forever). The lookup
+    // endpoint adds what it can, but it does not separate the two causes;
+    // see the comment on the event below. Gated behind the debounce so a
+    // permanently-unserved storefront costs one lookup pass per day, not one
+    // per tick. Never throws: a SystemicError here would trip the per-source
+    // breaker and take healthy targets down with the bad one.
     if (emptyFirstPage) {
       if (!(await hasEventToday(sql, monitor.id, "target_unavailable", stream.stream))) {
         // Ask the storefront-scoped question FIRST. An unscoped lookup is the US
         // storefront under another name — measured 2026-09-06, 93 of 310 real
         // apps answer resultCount 0 unscoped — so an unscoped 0 says nothing
-        // about an app Apple sells only elsewhere, and treating it as "no such
-        // id" pages a daily false error on a perfectly good target.
+        // about an app Apple sells only elsewhere. `lookupCount` takes a
+        // required `cc` so an unscoped call cannot be written by accident.
         const here = await lookupCount(appId, cc);
-        // Only when this storefront lacks it is the id itself in question, and
-        // the answer that matters is whether ANY storefront this monitor reads
-        // carries it. Stop at the first hit; the whole block runs once a day.
+        // When this storefront lacks it, the useful follow-up is where Apple
+        // DOES serve it — that turns "empty stream" into "add cn". It informs
+        // the message only; nothing branches on it. Stop at the first hit; the
+        // whole block runs once a day.
         let servedIn: string | null = null;
         let swept = 0;
         let sweepUnreachable = false;
@@ -409,35 +413,35 @@ export const appstoreAdapter: SourceAdapter = {
             }
           }
         }
-        const configured = monitor.config.limits.appstore_storefronts.join(", ");
-        // Escalate only when the search both RAN and COMPLETED. `swept > 0`
-        // matters because appstore_storefronts defaults to ["us"]: on a default
-        // monitor the loop's only entry is `cc` itself, so nothing is measured
-        // about the id and calling it wrong would page on no evidence — 93 of
-        // 310 real apps are simply absent from `us`. Everything else is info.
-        const missing = here === 0 && servedIn === null && swept > 0 && !sweepUnreachable;
+        const others = monitor.config.limits.appstore_storefronts.filter((s) => s !== cc);
+        // NO LEVEL DECISION HERE, deliberately. Three review rounds tried to
+        // classify "wrong id" vs "region-exclusive app" from this data and each
+        // one paged on a real app: Apple answers resultCount 0 for BOTH, and no
+        // storefront list separates them — Douyin (1142110895) is 0 in us, gb,
+        // jp and de and 1 only in cn, exactly like a typo (probed 2026-09-13).
+        // So the adapter reports what it measured and lets a human read it.
+        // `warn` is the ceiling on purpose: `target_unavailable` is not in
+        // ALERT_KINDS, so it surfaces on the monitor page without paging.
         await logEvent(sql, {
           monitorId: monitor.id,
           source: "appstore",
           stream: stream.stream,
-          // Only a wrong id is worth paging for. A storefront the operator
-          // configured that Apple does not serve is a settled state, not a
-          // daily warning — info records it and arms the debounce so the
-          // lookups cost one pass a day rather than one per tick.
-          level: missing ? "error" : "info",
+          level: "warn",
           kind: "target_unavailable",
-          // Each branch claims only what was measured.
-          message: missing
-            ? `app id ${appId} resolves in none of this monitor's storefronts (${configured}) — either the id is wrong or this monitor does not read the storefront that carries it; the stream produces nothing either way`
-            : here === null
-              ? `storefront ${cc} returned an empty feed for app ${appId} and Apple's lookup could not be reached, so the cause is unconfirmed; cursor held`
+          // Every message states a fact about THIS storefront — which is what
+          // the per-stream debounce scopes — and never asserts the id is wrong.
+          message:
+            here === null
+              ? `app ${appId} returned an empty feed in storefront ${cc} and Apple's lookup could not be reached, so the cause is unconfirmed; cursor held`
               : here >= 1
-                ? `app ${appId} is served in ${cc} but has no reviews there yet; cursor held`
+                ? `app ${appId} is served in storefront ${cc} but the feed returned nothing — either it has no reviews there yet or Apple served one of its transient blank pages; cursor held`
                 : servedIn !== null
                   ? `app ${appId} is not served in storefront ${cc} (Apple serves it in ${servedIn}) — drop this storefront or the stream stays empty`
                   : sweepUnreachable
-                    ? `app ${appId} is not served in storefront ${cc}; Apple's lookup could not be reached for the other storefronts, so whether the id itself is valid is unconfirmed`
-                    : `app ${appId} is not served in storefront ${cc}, and this monitor reads no other storefront to check the id against (${configured}) — add a storefront that carries it, or verify the id`,
+                    ? `app ${appId} is not served in storefront ${cc}; Apple's lookup could not be reached for this monitor's other storefronts, so nothing is known about the id itself`
+                    : swept > 0
+                      ? `app ${appId} is not served in storefront ${cc}, nor in this monitor's other storefronts (${others.join(", ")}) — verify the id, or add the storefront that carries it. Apple cannot distinguish a wrong id from a region-exclusive app, so this is not proof the id is wrong`
+                      : `app ${appId} is not served in storefront ${cc}, and this monitor reads no other storefront to check it against — verify the id, or add a storefront that carries it`,
           meta: {
             app_id: appId,
             storefront: cc,
@@ -445,7 +449,7 @@ export const appstoreAdapter: SourceAdapter = {
             served_in: servedIn,
             storefronts_swept: swept,
             sweep_unreachable: sweepUnreachable,
-            storefronts_checked: monitor.config.limits.appstore_storefronts,
+            storefronts_configured: monitor.config.limits.appstore_storefronts,
           },
         });
       }

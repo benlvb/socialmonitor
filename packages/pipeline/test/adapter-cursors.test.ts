@@ -712,7 +712,18 @@ describe("App Store cursor semantics", () => {
     expect(lastPageOf({ feed: { link: [null as unknown as { attributes?: { rel?: string; href?: string } }] } })).toBeNull();
   });
 
-  it("an unserved storefront (live shape: five links with EMPTY hrefs, no entries) holds quietly", async () => {
+  // ── target_unavailable ────────────────────────────────────────────────────
+  // Apple returns 200 + zero entries for a WRONG ID and for a valid app it does
+  // not sell in this storefront. Nothing in the feed, and nothing in `lookup`,
+  // separates the two — three review rounds tried and each shipped a daily
+  // false page on a real app. So the contract these tests pin is deliberately
+  // narrow: the branch must never be SILENT, and must never escalate past
+  // `warn`. Read `emptyFeed` as "the shape both causes produce".
+  const emptyFeed = {
+    feed: { link: ["self", "first", "last"].map((rel) => ({ attributes: { rel, href: "" } })) },
+  };
+
+  it("an unserved storefront (live shape: five links with EMPTY hrefs, no entries) is recorded, not silent", async () => {
     // Verbatim shape from storefronts Apple does not serve (probed li/ad/la):
     // links are present but carry no page number, so `last` is unusable.
     const unserved = {
@@ -729,30 +740,23 @@ describe("App Store cursor semantics", () => {
     restore = s.restore;
     const sql = fakeSql();
     const r = await appstoreAdapter.fetch({
-      sql: sql.db, monitor: monitorWith(), stream: { stream: "reviews/li/t1", target: appTarget }, cursor: CURSOR, cursorMeta: {},
+      sql: sql.db, monitor: monitorWith({ limits: { appstore_storefronts: ["li", "us"] } }),
+      stream: { stream: "reviews/li/t1", target: appTarget }, cursor: CURSOR, cursorMeta: {},
     });
     expect(r.items).toEqual([]);
     expect(r.nextCursor).toBeNull();
     expect(eventsOfKind(sql, "coverage_gap")).toHaveLength(0); // not a daily warning per dead storefront
-    // Recorded rather than silent, but at info: a configured storefront Apple
-    // does not serve is a settled state, not something to page on.
     const dead = eventsOfKind(sql, "target_unavailable");
     expect(dead).toHaveLength(1);
-    expect(dead[0]!.values).toContain("info");
+    expect(dead[0]!.values).toContain("warn");
     expect(s.urls).toHaveLength(3); // feed, lookup(li), lookup(us)
   });
 
-  it("an app Apple sells only OUTSIDE this storefront is info, never a false 'wrong id' error", async () => {
-    // The regression that shipped in the first cut of this fix: an UNSCOPED
-    // lookup is the `us` storefront under another name (93 of 310 real apps
-    // answer 0 unscoped), so treating an unscoped 0 as "no such id" paged a
-    // daily error on, say, a China-only app with a million live reviews. The
-    // id question may only be answered by sweeping the configured storefronts.
-    const empty = {
-      feed: { link: ["self", "first", "last"].map((rel) => ({ attributes: { rel, href: "" } })) },
-    };
+  it("an app Apple sells only OUTSIDE this storefront names where it IS served", async () => {
+    // The most actionable case: the operator's id is fine, their storefront
+    // list is wrong, and the message must say which storefront carries it.
     const s = stubFetch([
-      { match: /page=1\/json/, response: { body: empty } },
+      { match: /page=1\/json/, response: { body: emptyFeed } },
       { match: /lookup\?id=\d+&country=us/, response: { body: { resultCount: 0 } } },
       { match: /lookup\?id=\d+&country=cn/, response: { body: { resultCount: 1 } } },
     ]);
@@ -766,20 +770,17 @@ describe("App Store cursor semantics", () => {
     expect(r.nextCursor).toBeNull();
     const ev = eventsOfKind(sql, "target_unavailable");
     expect(ev).toHaveLength(1);
-    expect(ev[0]!.values).toContain("info"); // NOT error — the id is fine
-    expect(ev[0]!.values).not.toContain("error");
+    expect(ev[0]!.values).toContain("warn");
     expect(String(ev[0]!.values.find((v) => typeof v === "string" && /storefront/.test(v)))).toContain("cn");
   });
 
-  it("a nonexistent app id is an ERROR: it resolves in none of the monitor's storefronts", async () => {
-    // Apple answers 200 with zero entries for a bad id exactly as it does for an
-    // unserved storefront, so the feed alone cannot separate them and the stream
-    // used to hold forever saying nothing. Only a per-storefront sweep can.
-    const empty = {
-      feed: { link: ["self", "first", "last"].map((rel) => ({ attributes: { rel, href: "" } })) },
-    };
+  it("an id that resolves NOWHERE is reported at warn and says it is not proof the id is wrong", async () => {
+    // Apple answers 200 with zero entries for a bad id exactly as it does for
+    // an unserved storefront, so the stream used to hold forever saying
+    // nothing. It now speaks — and stops short of the accusation, because
+    // "0 everywhere this monitor reads" is also what Douyin looks like.
     const s = stubFetch([
-      { match: /page=1\/json/, response: { body: empty } },
+      { match: /page=1\/json/, response: { body: emptyFeed } },
       { match: /lookup\?id=\d+&country=us/, response: { body: { resultCount: 0 } } },
       { match: /lookup\?id=\d+&country=cn/, response: { body: { resultCount: 0 } } },
     ]);
@@ -794,23 +795,18 @@ describe("App Store cursor semantics", () => {
     expect(r.nextCursor).toBeNull(); // still holds — never advance over an unknown
     const bad = eventsOfKind(sql, "target_unavailable");
     expect(bad).toHaveLength(1);
-    expect(bad[0]!.values).toContain("error");
-    expect(String(bad[0]!.values.find((v) => typeof v === "string" && /resolves in none/.test(v)))).toContain("310633997");
+    expect(bad[0]!.values).toContain("warn");
+    const msg = String(bad[0]!.values.find((v) => typeof v === "string" && /verify the id/.test(v)));
+    expect(msg).toContain("310633997");
+    expect(msg).toContain("not proof the id is wrong");
     expect(s.urls).toHaveLength(3); // feed, lookup(us), lookup(cn)
   });
 
-  it("a DEFAULT monitor (storefronts ['us']) never pages: with nothing to sweep, the id is unproven", async () => {
-    // The regression the second review caught. appstore_storefronts defaults to
-    // ["us"], so on a default monitor the sweep's only entry IS cc, `continue`
-    // fires, and zero lookups run — measuring nothing about the id. Escalating
-    // there pages a valid China-only app on no evidence, which is the same
-    // shape as the bug this whole change exists to remove. Every earlier test
-    // configured TWO storefronts and so never visited this cell.
-    const empty = {
-      feed: { link: ["self", "first", "last"].map((rel) => ({ attributes: { rel, href: "" } })) },
-    };
+  it("a DEFAULT monitor (storefronts ['us']) spends no calls on a sweep it cannot run", async () => {
+    // appstore_storefronts defaults to ["us"], so the sweep's only entry IS cc
+    // and it makes zero calls. Round 2 escalated here on that empty evidence.
     const s = stubFetch([
-      { match: /page=1\/json/, response: { body: empty } },
+      { match: /page=1\/json/, response: { body: emptyFeed } },
       { match: /lookup\?id=\d+&country=us/, response: { body: { resultCount: 0 } } },
     ]);
     restore = s.restore;
@@ -821,19 +817,17 @@ describe("App Store cursor semantics", () => {
     expect(r.nextCursor).toBeNull();
     const ev = eventsOfKind(sql, "target_unavailable");
     expect(ev).toHaveLength(1);
-    expect(ev[0]!.values).toContain("info");
-    expect(ev[0]!.values).not.toContain("error"); // nothing was measured about the id
+    expect(ev[0]!.values).toContain("warn");
+    expect(String(ev[0]!.values.find((v) => typeof v === "string" && /verify the id/.test(v))))
+      .toContain("no other storefront");
     expect(s.urls).toHaveLength(2); // feed + lookup(us); the sweep made no calls
   });
 
-  it("a sweep that could not reach Apple does not manufacture a 'wrong id' error", async () => {
-    // `null` from lookupCount means unreachable, not "not served". Reading the
-    // two as the same turns an Apple outage into a page against a valid target.
-    const empty = {
-      feed: { link: ["self", "first", "last"].map((rel) => ({ attributes: { rel, href: "" } })) },
-    };
+  it("a sweep that could not reach Apple says nothing is known about the id", async () => {
+    // `null` from lookupCount means unreachable, not "not served" — the message
+    // must not borrow confidence from a call that failed.
     const s = stubFetch([
-      { match: /page=1\/json/, response: { body: empty } },
+      { match: /page=1\/json/, response: { body: emptyFeed } },
       { match: /lookup\?id=\d+&country=us/, response: { body: { resultCount: 0 } } },
       { match: /lookup\?id=\d+&country=cn/, response: { status: 503, body: {} } },
     ]);
@@ -847,17 +841,17 @@ describe("App Store cursor semantics", () => {
     expect(r.nextCursor).toBeNull();
     const ev = eventsOfKind(sql, "target_unavailable");
     expect(ev).toHaveLength(1);
-    expect(ev[0]!.values).toContain("info");
-    expect(ev[0]!.values).not.toContain("error");
-    expect(String(ev[0]!.values.find((v) => typeof v === "string" && /unconfirmed/.test(v)))).toContain("could not be reached");
+    expect(ev[0]!.values).toContain("warn");
+    expect(String(ev[0]!.values.find((v) => typeof v === "string" && /could not be reached/.test(v))))
+      .toContain("nothing is known about the id");
   });
 
-  it("an app served here with no reviews yet is info, and says so accurately", async () => {
-    const empty = {
-      feed: { link: ["self", "first", "last"].map((rel) => ({ attributes: { rel, href: "" } })) },
-    };
+  it("an app served here with no reviews yet does NOT rule out Apple's transient blank page", async () => {
+    // The adapter's own header documents blank pages on 4 of 30 app x storefront
+    // pairs, gone on retry — they land in exactly this branch, so the message
+    // may not assert the app has no reviews.
     const s = stubFetch([
-      { match: /page=1\/json/, response: { body: empty } },
+      { match: /page=1\/json/, response: { body: emptyFeed } },
       { match: /lookup\?id=\d+&country=us/, response: { body: { resultCount: 1 } } },
     ]);
     restore = s.restore;
@@ -868,8 +862,10 @@ describe("App Store cursor semantics", () => {
     expect(r.nextCursor).toBeNull();
     const ev = eventsOfKind(sql, "target_unavailable");
     expect(ev).toHaveLength(1);
-    expect(ev[0]!.values).toContain("info");
-    expect(String(ev[0]!.values.find((v) => typeof v === "string" && /no reviews/.test(v)))).toContain("us");
+    expect(ev[0]!.values).toContain("warn");
+    const msg = String(ev[0]!.values.find((v) => typeof v === "string" && /no reviews/.test(v)));
+    expect(msg).toContain("us");
+    expect(msg).toContain("blank page"); // hedged, not asserted
     expect(s.urls).toHaveLength(2); // no sweep needed — this storefront has it
   });
 
@@ -886,10 +882,75 @@ describe("App Store cursor semantics", () => {
     expect(r.nextCursor).toBeNull();
     const unknown = eventsOfKind(sql, "target_unavailable");
     expect(unknown).toHaveLength(1);
-    expect(unknown[0]!.values).toContain("info");
+    expect(unknown[0]!.values).toContain("warn");
     expect(
       String(unknown[0]!.values.find((v) => typeof v === "string" && /could not be reached/.test(v))),
     ).toContain("unconfirmed");
+  });
+
+  it("NO storefront configuration escalates target_unavailable to error", async () => {
+    // The guard against a fourth round. Rounds 1, 2 and 3 each shipped a
+    // predicate that looked right and paged a real app from a cell no test
+    // visited — round 3's was Douyin (1142110895): live, enormous, and 0 in
+    // us/gb/jp/de, 1 only in cn (probed 2026-09-13). Rather than add one more
+    // cell, this walks every shape the branch can reach and asserts the only
+    // thing that has held across all three rounds: nothing here pages.
+    const cases: { name: string; storefronts: string[]; lookups: { match: RegExp; response: { status?: number; body: unknown } }[] }[] = [
+      { name: "default single storefront, id resolves nowhere", storefronts: ["us"],
+        lookups: [{ match: /country=us/, response: { body: { resultCount: 0 } } }] },
+      { name: "Douyin shape: two storefronts, 0 in both, app is real", storefronts: ["us", "gb"],
+        lookups: [{ match: /country=us/, response: { body: { resultCount: 0 } } },
+                  { match: /country=gb/, response: { body: { resultCount: 0 } } }] },
+      { name: "served in a later storefront", storefronts: ["us", "gb", "cn"],
+        lookups: [{ match: /country=us/, response: { body: { resultCount: 0 } } },
+                  { match: /country=gb/, response: { body: { resultCount: 0 } } },
+                  { match: /country=cn/, response: { body: { resultCount: 1 } } }] },
+      { name: "served right here", storefronts: ["us", "gb"],
+        lookups: [{ match: /country=us/, response: { body: { resultCount: 1 } } }] },
+      { name: "every lookup unreachable", storefronts: ["us", "gb"],
+        lookups: [{ match: /country=us/, response: { body: { resultCount: 0 } } },
+                  { match: /country=gb/, response: { status: 503, body: {} } }] },
+      { name: "cc absent from the configured list (stale stream)", storefronts: ["gb", "cn"],
+        lookups: [{ match: /country=us/, response: { body: { resultCount: 0 } } },
+                  { match: /country=gb/, response: { body: { resultCount: 0 } } },
+                  { match: /country=cn/, response: { body: { resultCount: 0 } } }] },
+      { name: "duplicated storefront", storefronts: ["us", "us"],
+        lookups: [{ match: /country=us/, response: { body: { resultCount: 0 } } }] },
+    ];
+    for (const c of cases) {
+      const s = stubFetch([{ match: /page=1\/json/, response: { body: emptyFeed } }, ...c.lookups]);
+      const sql = fakeSql();
+      const r = await appstoreAdapter.fetch({
+        sql: sql.db,
+        monitor: monitorWith({ limits: { appstore_storefronts: c.storefronts } }),
+        stream: streamDef, cursor: CURSOR, cursorMeta: {},
+      });
+      s.restore();
+      expect(r.nextCursor, c.name).toBeNull();
+      const ev = eventsOfKind(sql, "target_unavailable");
+      expect(ev, c.name).toHaveLength(1);
+      expect(ev[0]!.values, c.name).toContain("warn");
+      expect(ev[0]!.values, c.name).not.toContain("error");
+    }
+  });
+
+  it("the daily debounce is scoped to the stream, and an armed day spends no lookups", async () => {
+    // The whole block sits behind hasEventToday(..., stream.stream): CLAUDE.md
+    // requires the per-stream scope, and the cost claim ("one lookup pass a
+    // day") is only true if an armed debounce skips the lookups too.
+    const s = stubFetch([{ match: /page=1\/json/, response: { body: emptyFeed } }]);
+    restore = s.restore;
+    const sql = fakeSql();
+    sql.when(/select 1 from pipeline_events/, [{ "?column?": 1 }]); // already logged today
+    const r = await appstoreAdapter.fetch({
+      sql: sql.db, monitor: monitorWith(), stream: streamDef, cursor: CURSOR, cursorMeta: {},
+    });
+    expect(r.nextCursor).toBeNull(); // the hold does not depend on the event
+    expect(eventsOfKind(sql, "target_unavailable")).toHaveLength(0);
+    expect(s.urls).toHaveLength(1); // the feed only — no lookup, no sweep
+    const probe = sql.calls.find((c) => /select 1 from pipeline_events/.test(c.text))!;
+    expect(probe.values).toContain("target_unavailable");
+    expect(probe.values).toContain(streamDef.stream); // scoped per stream, not per source
   });
 
   it("a page 10 with MORE than 50 entries still counts as the cap (>= guard)", async () => {
