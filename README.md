@@ -20,7 +20,7 @@ deploy, no code change.
 
 The system is **complete but not yet battle-tested against live traffic.** All
 six sources, the classifier, the dashboard, `/ask`, and weekly summaries are
-built; the suite is green (161 tests, including mutation-verified cursor tests);
+built; the suite is green (170 tests, including mutation-verified cursor tests);
 three review passes (one automated, two full-repo model audits) have been
 applied. What has *not* happened is a production run: the adapters were
 verified against recorded fixtures and each platform's documented behaviour,
@@ -65,7 +65,7 @@ There is no hosted version. You run your own.
 ```sh
 git clone https://github.com/benlvb/socialmonitor && cd socialmonitor
 pnpm install
-pnpm typecheck && pnpm test && pnpm build   # 161 tests, all packages
+pnpm typecheck && pnpm test && pnpm build   # 170 tests, all packages
 cp .env.example .env                        # everything blank is a valid state
 ln -s ../../.env apps/web/.env              # Next.js only reads env from apps/web (a symlink is fine)
 pnpm --filter @socialmonitor/pipeline dev   # worker starts, reports "idle (unconfigured)"
@@ -272,6 +272,7 @@ first sync. Watch the dashboard's **Pipeline health** panel.
 | Items fetched but never classified | No Anthropic key, daily budget spent, or a batch is still processing (30-min cadence) | Dashboard budget tile + worker logs show which |
 | `coverage_gap` warning | More content in one window than the page cap allows; the cursor held and the remainder resumes next run. App Store variant: Apple served a blank or short page mid-feed (it does, transiently); the cursor held and the walk repeats next run | Nothing lost. If it persists on X/Reddit/YouTube, raise `limits.max_pages_per_fetch` or shorten `cadence_minutes.fetch`; on App Store it clears by itself |
 | `coverage_lost` error | App Store: all 500 reviews Apple exposes for a storefront were newer than the cursor, so older ones since the last run are unreachable; the cursor advanced past them | The only lossy path in the pipeline, by construction of Apple's feed. Shorten `cadence_minutes.fetch` for that monitor; expect it once on the first backfill of a busy app |
+| `target_unavailable` warning | App Store: page 1 of a target's feed came back empty. Apple returns exactly this for a wrong app id AND for a valid app it does not sell in that storefront, and its `lookup` endpoint cannot separate them either — so the event reports what was measured and never accuses the id | Read the message: it says whether Apple serves the app in that storefront, and names another configured storefront that carries it when one does. Either fix the id or adjust `limits.appstore_storefronts`. The cursor is held, so nothing is lost while you decide |
 | `pooler_misconfigured` error | `DATABASE_URL` is the transaction pooler; advisory locks cannot work | Switch to the **Session pooler** string and restart the worker |
 | `summary_truncated` / `summary_failed` | The weekly narrative hit the token cap, or the job threw | Truncated: the stored summary may end mid-sentence — re-run happens next Monday, or clear its `weekly_summaries` row to regenerate. Failed: the dispatch marker is cleared automatically so the producer retries |
 | `batch_lost` warning | A pending classification batch became unrecoverable (expired after ~29 days, or a 404) | Self-healing — the id is cleared and the items resubmit on the next tick. Only investigate if it repeats |

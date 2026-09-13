@@ -43,6 +43,24 @@ import { fixtureMode, loadFixture } from "./fixtures";
  * `limits.max_pages_per_fetch` knob (built for metered APIs) does not apply; a
  * smaller cap could never converge on a busy app's backfill.
  *
+ * An empty page 1 with no usable `last` is the one shape the feed cannot explain
+ * on its own: a storefront Apple does not serve and an app id that does not
+ * exist look identical. `lookup` resolves it after the walk, but ONLY when
+ * asked per storefront — an unscoped lookup is the US storefront under another
+ * name (measured 2026-09-06: 93 of 310 real apps answer 0 unscoped, and 14/14
+ * spot-checked answered 0 unscoped / 0 for `us` / 1 for their home store), so
+ * an unscoped 0 is not evidence of a bad id. The walk asks `lookup(id, cc)`
+ * first and, only if that storefront lacks it, the monitor's other configured
+ * storefronts — but that ADDS CONTEXT, IT SEPARATES NOTHING. Apple answers
+ * `resultCount` 0 for a wrong id and for a real app it does not sell there,
+ * and no storefront list distinguishes them: Douyin (1142110895) is live and
+ * enormous and reads 0 in us/gb/jp/de, 1 only in cn (probed 2026-09-13).
+ * Three review rounds tried to classify the two and each paged a real app, so
+ * `target_unavailable` is unconditionally `warn` — it is not in ALERT_KINDS,
+ * so it never pages — and the message reports what was measured without
+ * convicting the id. It never throws: a SystemicError here would trip the
+ * per-source breaker and take healthy targets down with the bad one.
+ *
  * Edited reviews resurface with a new `updated` but the same id. The PK on
  * raw_items includes posted_at, so a second row would double the item count
  * that ranks the dedup shortlist; ids already stored on this stream are
@@ -188,6 +206,34 @@ async function fetchPage(
   return { status: res.status, feed: (await res.json()) as RssFeed };
 }
 
+/**
+ * How many results Apple's lookup endpoint returns for an app id, or null when
+ * the lookup itself could not be reached.
+ *
+ * The reviews feed answers 200 with zero entries for BOTH a storefront that does
+ * not carry the app and an app id that does not exist, so an empty page 1 alone
+ * cannot tell an operator typo from a regional gap.
+ *
+ * ALWAYS pass `cc`. Omitting it does not mean "any storefront" — Apple defaults
+ * to `us`, so an unscoped 0 is returned for every app not sold in the United
+ * States (measured 2026-09-06: 93 of 310 real apps). Treating that as "no such
+ * id" pages a false error on a valid target. Note what this endpoint can and
+ * cannot do: `lookup(id, cc)` is a reliable oracle for "does Apple serve this
+ * app HERE", and nothing at all for "is this id real" — 0 everywhere a monitor
+ * happens to read is also what a region-exclusive app looks like.
+ */
+async function lookupCount(appId: string, cc: string): Promise<number | null> {
+  const url = `${RSS_HOST}/lookup?id=${encodeURIComponent(appId)}&country=${encodeURIComponent(cc)}`;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { resultCount?: number };
+    return typeof body.resultCount === "number" ? body.resultCount : null;
+  } catch {
+    return null;
+  }
+}
+
 function newestIso(items: RawItem[]): string | null {
   if (items.length === 0) return null;
   return new Date(Math.max(...items.map((i) => i.postedAt.getTime()))).toISOString();
@@ -252,6 +298,7 @@ export const appstoreAdapter: SourceAdapter = {
     let feedCapped = false;
     /** Set when a page came back empty/short below `last` or without links (review N1). */
     let anomalyPage: number | null = null;
+    let emptyFirstPage = false;
 
     for (let page = 1; page <= APPSTORE_FEED_PAGE_CAP; page++) {
       const { status, feed } = await fetchPage(cc, appId, page);
@@ -268,10 +315,13 @@ export const appstoreAdapter: SourceAdapter = {
       const lastPage = lastPageOf(feed);
       if (entries.length === 0 && lastPage !== null && page > lastPage) break; // past the end
       if (entries.length === 0) {
-        // A transient blank page, not the end. Page 1 with no links at all is
-        // also what an unserved storefront looks like — hold quietly; a later
-        // page, or a page 1 whose links claim more pages, is a gap worth saying.
+        // A transient blank page, not the end. A later page, or a page 1 whose
+        // links claim more pages, is a mid-feed gap. A bare empty page 1 is the
+        // ambiguous shape — an unserved storefront OR a nonexistent app id —
+        // and used to break here silently, so a typo'd target looked exactly
+        // like a healthy stream forever. Resolved after the walk via lookup.
         if (page > 1 || (lastPage !== null && lastPage > 1)) anomalyPage = page;
+        else emptyFirstPage = true;
         break;
       }
       let reachedCursor = false;
@@ -327,6 +377,93 @@ export const appstoreAdapter: SourceAdapter = {
           and stream = ${stream.stream} and external_id = any(${ids}::text[])`;
       const seen = new Set(rows.map((r) => r.external_id as string));
       if (seen.size > 0) items = newer.filter((i) => !seen.has(i.externalId));
+    }
+
+    // An empty page 1 with no usable links: a wrong app id and a storefront
+    // Apple does not serve look identical here, and BOTH produce nothing, so
+    // the one thing this must not do is stay silent (the bug this branch
+    // exists for — a typo'd target read as healthy forever). The lookup
+    // endpoint adds what it can, but it does not separate the two causes;
+    // see the comment on the event below. Gated behind the debounce so a
+    // permanently-unserved storefront costs one lookup pass per day, not one
+    // per tick. Never throws: a SystemicError here would trip the per-source
+    // breaker and take healthy targets down with the bad one.
+    if (emptyFirstPage) {
+      if (!(await hasEventToday(sql, monitor.id, "target_unavailable", stream.stream))) {
+        // Ask the storefront-scoped question FIRST. An unscoped lookup is the US
+        // storefront under another name — measured 2026-09-06, 93 of 310 real
+        // apps answer resultCount 0 unscoped — so an unscoped 0 says nothing
+        // about an app Apple sells only elsewhere. `lookupCount` takes a
+        // required `cc` so an unscoped call cannot be written by accident.
+        const here = await lookupCount(appId, cc);
+        // When this storefront lacks it, the useful follow-up is where Apple
+        // DOES serve it — that turns "empty stream" into "add cn". It informs
+        // the message only; nothing branches on it. Stop at the first hit; the
+        // whole block runs once a day.
+        let servedIn: string | null = null;
+        let swept = 0;
+        // Counted, not a flag: the message says how many storefronts actually
+        // answered, so "could not be reached" cannot imply more than happened.
+        let sweepFailed = 0;
+        if (here === 0) {
+          for (const other of monitor.config.limits.appstore_storefronts) {
+            if (other === cc) continue;
+            swept++;
+            const n = await lookupCount(appId, other);
+            // A failed lookup is not a "no" — conflating them manufactures the
+            // very false error this branch exists to avoid.
+            if (n === null) {
+              sweepFailed++;
+              continue;
+            }
+            if (n >= 1) {
+              servedIn = other;
+              break;
+            }
+          }
+        }
+        const others = monitor.config.limits.appstore_storefronts.filter((s) => s !== cc);
+        // NO LEVEL DECISION HERE, deliberately. Three review rounds tried to
+        // classify "wrong id" vs "region-exclusive app" from this data and each
+        // one paged on a real app: Apple answers resultCount 0 for BOTH, and no
+        // storefront list separates them — Douyin (1142110895) is 0 in us, gb,
+        // jp and de and 1 only in cn, exactly like a typo (probed 2026-09-13).
+        // So the adapter reports what it measured and lets a human read it.
+        // `warn` is the ceiling on purpose: `target_unavailable` is not in
+        // ALERT_KINDS, so it surfaces on the monitor page without paging.
+        await logEvent(sql, {
+          monitorId: monitor.id,
+          source: "appstore",
+          stream: stream.stream,
+          level: "warn",
+          kind: "target_unavailable",
+          // Every message states a fact about THIS storefront — which is what
+          // the per-stream debounce scopes — and never asserts the id is wrong.
+          message:
+            here === null
+              ? `app ${appId} returned an empty feed in storefront ${cc} and Apple's lookup could not be reached, so the cause is unconfirmed; cursor held`
+              : here >= 1
+                ? `app ${appId} is served in storefront ${cc} but the feed returned nothing — either it has no reviews there yet or Apple served one of its transient blank pages; cursor held`
+                : servedIn !== null
+                  ? `app ${appId} is not served in storefront ${cc} (Apple serves it in ${servedIn}) — drop this storefront or the stream stays empty`
+                  : sweepFailed > 0
+                    ? `app ${appId} is not served in storefront ${cc}; ${sweepFailed} of this monitor's ${swept} other storefronts could not be reached, so nothing is known about the id itself`
+                    : swept > 0
+                      ? `app ${appId} is not served in storefront ${cc}, nor in this monitor's other storefronts (${others.join(", ")}) — verify the id, or add the storefront that carries it. Apple cannot distinguish a wrong id from a region-exclusive app, so this is not proof the id is wrong`
+                      : `app ${appId} is not served in storefront ${cc}, and this monitor reads no other storefront to check it against — verify the id, or add a storefront that carries it. One storefront's silence is not proof the id is wrong`,
+          meta: {
+            app_id: appId,
+            storefront: cc,
+            lookup_storefront: here,
+            served_in: servedIn,
+            storefronts_swept: swept,
+            sweep_unreachable: sweepFailed > 0,
+            sweep_failed: sweepFailed,
+            storefronts_configured: monitor.config.limits.appstore_storefronts,
+          },
+        });
+      }
+      return { items, nextCursor: null };
     }
 
     if (anomalyPage !== null) {

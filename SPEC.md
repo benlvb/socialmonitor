@@ -357,7 +357,15 @@ Per-source notes (v1):
   page=<n>/json` until the cursor (ISO `updated`), a short page, or Apple's 10-page cap.
   Content = title + body (collapsed when one repeats the other); rating + app version
   into `context`; helpful votes → engagement. Termination by `link[rel=last]`; an empty or
-  short page below it (Apple's transient blank pages) holds + `coverage_gap`.
+  short page below it (Apple's transient blank pages) holds + `coverage_gap`. An empty
+  PAGE 1 with no usable links is different: it is what Apple returns for a wrong app id
+  AND for a valid app it does not sell in that storefront, and the `lookup` endpoint
+  cannot separate them (Douyin `1142110895` answers `resultCount` 0 in us/gb/jp/de and 1
+  only in cn — indistinguishable from a typo). The cursor holds and a per-stream,
+  once-a-day `target_unavailable` event records what `lookup(id, cc)` and a sweep of the
+  monitor's other storefronts actually returned. It is **`warn`, never `error`**: the
+  adapter has no evidence that can convict an id, and paging on a guess is the defect
+  this event was corrected three times to remove.
 - **playstore** (Android Publisher API, service-account key — D24): `reviews/<target>` per app target, no storefront dimension. Newest-first walk of `/v3/applications/<package>/reviews?maxResults=100&token=…` until an entry strictly older than the cursor or a page without `nextPageToken` (the token is the authority: an empty page that carries one is not the end). `limits.max_pages_per_fetch` bounds a run; an exhausted budget holds with `cursor_meta.pending_token`/`pending_newest`, resumes from the token next run and advances to the remembered newest when the walk completes; a stale token restarts from page 1; every hold emits a per-stream `coverage_gap`. Google keeps ~7 days, own apps only.
 - **playstore public** (`app_public`, google-play-scraper — D25): `public/<lang>/<target>` per
   app target × `limits.playstore_langs`. `reviews({appId, lang, sort: NEWEST, num: 1000, paginate})` (150 served per request; a smaller `num` is sliced client-side and its remainder skipped)

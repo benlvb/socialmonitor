@@ -18,7 +18,10 @@ the web app; the worker and cron run themselves.
    Warn-level kinds do **not** page and are visible only on the dashboard:
    `coverage_gap` (a fetch window was larger than the page cap — the cursor held and the
    remainder resumes next run), `batch_lost` (a stale classification batch was discarded
-   and resubmitted), `items_dropped`, `run_failed`, `summary_skipped`.
+   and resubmitted), `target_unavailable` (App Store: a target's page 1 is empty —
+   a wrong app id and a storefront Apple does not serve are indistinguishable here,
+   so this never pages; the message says what the `lookup` endpoint could confirm),
+   `items_dropped`, `run_failed`, `summary_skipped`.
 2. **Dashboard per monitor** (`/monitors/<id>`): scan the four tiles (items·7d,
    relevant rate, budget burn, spend) and the Pipeline health table. Cursor age
    ("last success") is the liveness signal per stream.
