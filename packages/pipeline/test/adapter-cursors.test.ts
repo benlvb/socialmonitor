@@ -934,6 +934,44 @@ describe("App Store cursor semantics", () => {
     }
   });
 
+  it("the warn ceiling holds at EVERY sweep width the schema allows (0..19 other storefronts)", async () => {
+    // The round-3 review found the fixed table above tops out at a sweep width
+    // of 2, so a threshold-shaped predicate (`swept >= 3 ? error : warn`)
+    // re-introduced the escalation with the suite fully green. The bound that
+    // matters is the schema's: appstore_storefronts is .min(1).max(20), so the
+    // sweep runs 0..19 and every width must be provably warn — otherwise the
+    // guard only rules out the widths someone happened to imagine.
+    const CODES = ["gb", "cn", "jp", "kr", "ru", "tr", "br", "de", "in", "fr",
+                   "it", "es", "ca", "au", "mx", "nl", "se", "pl", "id"];
+    expect(CODES).toHaveLength(19); // max 20 configured, minus `us` itself
+    for (let width = 0; width <= CODES.length; width++) {
+      const others = CODES.slice(0, width);
+      const s = stubFetch([
+        { match: /page=1\/json/, response: { body: emptyFeed } },
+        // Every storefront answers a real, measured 0: the app is nowhere this
+        // monitor reads — which is a region-exclusive app as much as a typo.
+        ...["us", ...others].map((code) => ({
+          match: new RegExp(`lookup\\?id=\\d+&country=${code}`),
+          response: { body: { resultCount: 0 } },
+        })),
+      ]);
+      const sql = fakeSql();
+      const r = await appstoreAdapter.fetch({
+        sql: sql.db,
+        monitor: monitorWith({ limits: { appstore_storefronts: ["us", ...others] } }),
+        stream: streamDef, cursor: CURSOR, cursorMeta: {},
+      });
+      s.restore();
+      const label = `sweep width ${width}`;
+      expect(r.nextCursor, label).toBeNull();
+      const ev = eventsOfKind(sql, "target_unavailable");
+      expect(ev, label).toHaveLength(1);
+      expect(ev[0]!.values, label).toContain("warn");
+      expect(ev[0]!.values, label).not.toContain("error");
+      expect(s.urls, label).toHaveLength(2 + width); // feed + lookup(us) + the sweep
+    }
+  });
+
   it("the daily debounce is scoped to the stream, and an armed day spends no lookups", async () => {
     // The whole block sits behind hasEventToday(..., stream.stream): CLAUDE.md
     // requires the per-stream scope, and the cost claim ("one lookup pass a

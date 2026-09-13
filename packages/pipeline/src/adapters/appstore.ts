@@ -51,9 +51,14 @@ import { fixtureMode, loadFixture } from "./fixtures";
  * spot-checked answered 0 unscoped / 0 for `us` / 1 for their home store), so
  * an unscoped 0 is not evidence of a bad id. The walk asks `lookup(id, cc)`
  * first and, only if that storefront lacks it, the monitor's other configured
- * storefronts. `target_unavailable` is then error when the id resolves in NONE
- * of them, info otherwise — served-here-but-no-reviews, served-elsewhere, or
- * lookup unreachable. It never throws: a SystemicError here would trip the
+ * storefronts — but that ADDS CONTEXT, IT SEPARATES NOTHING. Apple answers
+ * `resultCount` 0 for a wrong id and for a real app it does not sell there,
+ * and no storefront list distinguishes them: Douyin (1142110895) is live and
+ * enormous and reads 0 in us/gb/jp/de, 1 only in cn (probed 2026-09-13).
+ * Three review rounds tried to classify the two and each paged a real app, so
+ * `target_unavailable` is unconditionally `warn` — it is not in ALERT_KINDS,
+ * so it never pages — and the message reports what was measured without
+ * convicting the id. It never throws: a SystemicError here would trip the
  * per-source breaker and take healthy targets down with the bad one.
  *
  * Edited reviews resurface with a new `updated` but the same id. The PK on
@@ -212,8 +217,10 @@ async function fetchPage(
  * ALWAYS pass `cc`. Omitting it does not mean "any storefront" — Apple defaults
  * to `us`, so an unscoped 0 is returned for every app not sold in the United
  * States (measured 2026-09-06: 93 of 310 real apps). Treating that as "no such
- * id" pages a false error on a valid target; only a per-storefront sweep is
- * evidence about the id itself.
+ * id" pages a false error on a valid target. Note what this endpoint can and
+ * cannot do: `lookup(id, cc)` is a reliable oracle for "does Apple serve this
+ * app HERE", and nothing at all for "is this id real" — 0 everywhere a monitor
+ * happens to read is also what a region-exclusive app looks like.
  */
 async function lookupCount(appId: string, cc: string): Promise<number | null> {
   const url = `${RSS_HOST}/lookup?id=${encodeURIComponent(appId)}&country=${encodeURIComponent(cc)}`;
@@ -395,7 +402,9 @@ export const appstoreAdapter: SourceAdapter = {
         // whole block runs once a day.
         let servedIn: string | null = null;
         let swept = 0;
-        let sweepUnreachable = false;
+        // Counted, not a flag: the message says how many storefronts actually
+        // answered, so "could not be reached" cannot imply more than happened.
+        let sweepFailed = 0;
         if (here === 0) {
           for (const other of monitor.config.limits.appstore_storefronts) {
             if (other === cc) continue;
@@ -404,7 +413,7 @@ export const appstoreAdapter: SourceAdapter = {
             // A failed lookup is not a "no" — conflating them manufactures the
             // very false error this branch exists to avoid.
             if (n === null) {
-              sweepUnreachable = true;
+              sweepFailed++;
               continue;
             }
             if (n >= 1) {
@@ -437,18 +446,19 @@ export const appstoreAdapter: SourceAdapter = {
                 ? `app ${appId} is served in storefront ${cc} but the feed returned nothing — either it has no reviews there yet or Apple served one of its transient blank pages; cursor held`
                 : servedIn !== null
                   ? `app ${appId} is not served in storefront ${cc} (Apple serves it in ${servedIn}) — drop this storefront or the stream stays empty`
-                  : sweepUnreachable
-                    ? `app ${appId} is not served in storefront ${cc}; Apple's lookup could not be reached for this monitor's other storefronts, so nothing is known about the id itself`
+                  : sweepFailed > 0
+                    ? `app ${appId} is not served in storefront ${cc}; ${sweepFailed} of this monitor's ${swept} other storefronts could not be reached, so nothing is known about the id itself`
                     : swept > 0
                       ? `app ${appId} is not served in storefront ${cc}, nor in this monitor's other storefronts (${others.join(", ")}) — verify the id, or add the storefront that carries it. Apple cannot distinguish a wrong id from a region-exclusive app, so this is not proof the id is wrong`
-                      : `app ${appId} is not served in storefront ${cc}, and this monitor reads no other storefront to check it against — verify the id, or add a storefront that carries it`,
+                      : `app ${appId} is not served in storefront ${cc}, and this monitor reads no other storefront to check it against — verify the id, or add a storefront that carries it. One storefront's silence is not proof the id is wrong`,
           meta: {
             app_id: appId,
             storefront: cc,
             lookup_storefront: here,
             served_in: servedIn,
             storefronts_swept: swept,
-            sweep_unreachable: sweepUnreachable,
+            sweep_unreachable: sweepFailed > 0,
+            sweep_failed: sweepFailed,
             storefronts_configured: monitor.config.limits.appstore_storefronts,
           },
         });
